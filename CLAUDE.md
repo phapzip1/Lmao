@@ -1,0 +1,24 @@
+# Lmao Engine
+
+C++20 game engine. Vulkan first (D3D12, Metal, WebGPU later), GLFW as one platform backend. Windows primary, Linux in CI.
+
+## Layering (lower never includes higher)
+`core` → `rhi` → `scene`/`resource` → systems (`render`, `physics`, `audio`, `anim`, `net`, `loc`) → gameplay (`script`, `ai`, `cinematics`) → `tools`.
+
+## Hard rules
+- **Dependencies are git submodules in `third_party/`.** No vcpkg, Conan or FetchContent. Never edit files inside a submodule. Use the `add-dependency` skill.
+- **No backend types outside their backend.** `vulkan.h` only in `rhi_vulkan/`, `d3d12.h` only in `rhi_d3d12/`. The renderer talks to `rhi::Device` / `rhi::CommandList` only.
+- **Handles, not pointers** for resources, entities and assets (index + generation).
+- Render passes declare reads and writes; the render graph inserts barriers. No hand-written barriers in renderer code.
+- The audio thread never locks, allocates or does IO.
+
+## Conventions
+- Right-handed world, Y-up, column-major matrices, depth range 0..1, **reverse-Z** (clear 0, compare GREATER), `D32_SFLOAT`.
+- Vulkan Y flip via negative viewport height; GL uses `glClipControl(GL_UPPER_LEFT, GL_ZERO_TO_ONE)`.
+- Strings are UTF-8 everywhere; convert only at OS API boundaries.
+- Shaders: Slang. Binding convention: push constants (≤128 B), set0 = global bindless, set1 = per-frame.
+- No `vec3` in GPU buffers; `static_assert` struct sizes and offsets.
+- Name every GPU object and wrap passes in debug markers.
+
+## Build
+See the `engine-build` skill. CMake ≥ 3.25 + Ninja, presets in `CMakePresets.json`.
