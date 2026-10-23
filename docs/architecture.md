@@ -26,8 +26,8 @@ L0  Core                Platform · Memory · Jobs · Math · Containers · Log/
 engine/
   core/          platform/ (interfaces) + platform/platforms/{glfw,win32,posix}/ (backends)
                  memory/ jobs/ math/ containers/ log/ io/ reflect/ profile/
-  rhi/           interface only — no backend headers
-  rhi_vulkan/    rhi_d3d12/    rhi_null/    (later: rhi_metal/ rhi_webgpu/ rhi_gl/)
+  rhi/           interface (no backend headers) + rhi/rhis/{vulkan,d3d12,null}/ (backends;
+                 later metal/ webgpu/ gl/)
   render/        rendergraph/ renderer3d/ renderer2d/ materials/ debugdraw/ ui_text/
   scene/         ecs/ hierarchy/ components/ serialization/
   resource/      asset_db/ loaders/ streaming/
@@ -80,7 +80,7 @@ docs/
 ## RHI (render hardware interface)
 Modeled on the common ground of Vulkan, D3D12 and Metal; simpler APIs emulate it.
 
-- Public headers contain no backend types; backends live in `rhi_<api>/` and are selected **at runtime**.
+- Public headers contain no backend types; backends live in `rhi/rhis/<api>/` and are selected **at runtime**.
 - Resources are opaque handles created from plain descriptor structs (`BufferDesc`, `TextureDesc`, `GraphicsPipelineDesc`).
 - Abstract enums (`Format`, `ResourceState`, …) with per-backend translation tables.
 - Capabilities are queried (`device->caps()`), never assumed.

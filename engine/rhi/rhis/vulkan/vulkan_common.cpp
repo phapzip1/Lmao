@@ -1,0 +1,71 @@
+#include "rhi/rhis/vulkan/vulkan_common.h"
+
+#include <cstring>
+
+namespace Lmao::Rhi::Vulkan
+{
+    namespace
+    {
+
+        // vk_enum_string_helper.h now lives in Vulkan-Utility-Libraries; these are the results
+        // the engine is likely to see.
+        const char *result_name(VkResult result)
+        {
+            switch (result)
+            {
+            case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+            case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+            case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
+            case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+            case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
+            case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
+            case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
+            case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
+            case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
+            case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
+            case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+            case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
+            case VK_ERROR_OUT_OF_POOL_MEMORY: return "VK_ERROR_OUT_OF_POOL_MEMORY";
+            case VK_ERROR_SURFACE_LOST_KHR: return "VK_ERROR_SURFACE_LOST_KHR";
+            case VK_ERROR_NATIVE_WINDOW_IN_USE_KHR: return "VK_ERROR_NATIVE_WINDOW_IN_USE_KHR";
+            case VK_ERROR_OUT_OF_DATE_KHR: return "VK_ERROR_OUT_OF_DATE_KHR";
+            case VK_ERROR_VALIDATION_FAILED_EXT: return "VK_ERROR_VALIDATION_FAILED_EXT";
+            case VK_ERROR_UNKNOWN: return "VK_ERROR_UNKNOWN";
+            default: return nullptr;
+            }
+        }
+
+    } // namespace
+
+    spdlog::logger *LogChannel()
+    {
+        static spdlog::logger *channel = Log::Channel("vulkan");
+        return channel;
+    }
+
+    bool Check(VkResult result, const char *what)
+    {
+        if (result >= 0)
+            return true;
+        if (const char *name = result_name(result))
+            LMAO_LOG_ERROR(LogChannel(), "{} failed: {}", what, name);
+        else
+            LMAO_LOG_ERROR(LogChannel(), "{} failed: VkResult {}", what, static_cast<int>(result));
+        return false;
+    }
+
+    std::string VersionToString(uint32_t version)
+    {
+        return fmt::format("{}.{}.{}", VK_API_VERSION_MAJOR(version), VK_API_VERSION_MINOR(version),
+                           VK_API_VERSION_PATCH(version));
+    }
+
+    bool HasExtension(std::span<const VkExtensionProperties> extensions, const char *name)
+    {
+        for (const VkExtensionProperties &extension : extensions)
+            if (std::strcmp(extension.extensionName, name) == 0)
+                return true;
+        return false;
+    }
+
+} // namespace Lmao::Rhi::Vulkan

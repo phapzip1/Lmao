@@ -72,7 +72,7 @@ target_link_libraries(volk PUBLIC Vulkan::Headers)
 
 # --- VulkanMemoryAllocator (MIT) ---------------------------------------------
 # Header-only INTERFACE target GPUOpen::VulkanMemoryAllocator. VMA_IMPLEMENTATION goes in
-# exactly one .cpp in rhi_vulkan, with VMA_STATIC_VULKAN_FUNCTIONS=0 and
+# exactly one .cpp in engine/rhi/rhis/vulkan/, with VMA_STATIC_VULKAN_FUNCTIONS=0 and
 # VMA_DYNAMIC_VULKAN_FUNCTIONS=1 (functions come from volk).
 set(VMA_BUILD_SAMPLES       OFF CACHE BOOL "" FORCE)
 set(VMA_BUILD_DOCUMENTATION OFF CACHE BOOL "" FORCE)

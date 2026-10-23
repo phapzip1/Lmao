@@ -11,7 +11,7 @@ namespace Lmao
     struct WindowDesc
     {
         std::string_view Title = "Lmao"; // UTF-8
-        uint32_t Width = 1280;            // client area, in screen coordinates
+        uint32_t Width = 1280;           // client area, in screen coordinates
         uint32_t Height = 720;
         bool Resizable = true;
         bool Visible = true;

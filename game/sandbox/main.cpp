@@ -1,11 +1,12 @@
-// M0 sandbox: opens a window, logs every input event, and marks frames for Tracy.
-// Esc closes the window.
+// Sandbox: opens a window, creates the GPU device, logs every input event, and marks frames
+// for Tracy. Esc closes the window.
 
 #include "core/log/log.h"
 #include "core/platform/crash_handler.h"
 #include "core/platform/platform.h"
 #include "core/platform/time.h"
 #include "core/profile/profile.h"
+#include "rhi/device.h"
 
 #include <chrono>
 #include <thread>
@@ -68,6 +69,10 @@ int main()
         if (!window)
             return 1;
 
+        auto device = Rhi::Device::Create({.ApplicationName = "Lmao Sandbox"});
+        if (!device)
+            return 1;
+
         Stopwatch frame_timer;
         while (!window->ShouldClose())
         {
@@ -87,7 +92,7 @@ int main()
             LMAO_PROFILE_PLOT("Frame time (ms)", frame_timer.Lap() * 1000.0);
             LMAO_PROFILE_FRAME();
         }
-    } // window, then platform, destroyed here
+    } // device, window, then platform destroyed here (reverse order of creation)
 
     LMAO_INFO("Bye");
     Log::Shutdown();
