@@ -7,3 +7,5 @@
 | spdlog | https://github.com/gabime/spdlog | v1.17.0 | MIT |
 | glm | https://github.com/g-truc/glm | 1.0.3 | MIT |
 | VulkanMemoryAllocator | https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator | v3.4.0 | MIT |
+| Vulkan-Headers | https://github.com/KhronosGroup/Vulkan-Headers | vulkan-sdk-1.4.363.0 | Apache-2.0 OR MIT |
+| volk | https://github.com/zeux/volk | vulkan-sdk-1.4.363.0 | MIT |

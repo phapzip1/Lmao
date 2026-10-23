@@ -47,14 +47,37 @@ target_compile_definitions(glm INTERFACE
     GLM_FORCE_DEPTH_ZERO_TO_ONE
     GLM_FORCE_RIGHT_HANDED)
 
+# --- Vulkan-Headers (Apache-2.0 / MIT) ---------------------------------------
+# Header-only INTERFACE target Vulkan::Headers. Keep the tag in sync with volk.
+set(VULKAN_HEADERS_ENABLE_TESTS   OFF CACHE BOOL "" FORCE)
+set(VULKAN_HEADERS_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+set(VULKAN_HEADERS_ENABLE_MODULE  OFF CACHE BOOL "" FORCE)  # C++ modules are off project-wide
+add_subdirectory(Vulkan-Headers SYSTEM EXCLUDE_FROM_ALL)
+
+# --- volk (MIT) --------------------------------------------------------------
+# Vulkan function loader: the engine never links vulkan-1.lib / libvulkan.so.
+# VOLK_PULL_IN_VULKAN is off because volk would otherwise prefer an installed Vulkan SDK's
+# headers over the submodule; Vulkan::Headers is linked explicitly below instead.
+set(VOLK_PULL_IN_VULKAN OFF CACHE BOOL "" FORCE)
+set(VOLK_INSTALL        OFF CACHE BOOL "" FORCE)
+set(VOLK_HEADERS_ONLY   OFF CACHE BOOL "" FORCE)
+if(WIN32)
+    # Loads vkCreateWin32SurfaceKHR for surfaces made from native window handles.
+    # vulkan.h then includes <windows.h>, so trim it.
+    set(VOLK_STATIC_DEFINES VK_USE_PLATFORM_WIN32_KHR WIN32_LEAN_AND_MEAN NOMINMAX CACHE STRING "" FORCE)
+endif()
+# TODO(M1): Linux surface defines (VK_USE_PLATFORM_XLIB_KHR / VK_USE_PLATFORM_WAYLAND_KHR).
+add_subdirectory(volk SYSTEM EXCLUDE_FROM_ALL)
+target_link_libraries(volk PUBLIC Vulkan::Headers)
+
 # --- VulkanMemoryAllocator (MIT) ---------------------------------------------
 # Header-only INTERFACE target GPUOpen::VulkanMemoryAllocator. VMA_IMPLEMENTATION goes in
 # exactly one .cpp in rhi_vulkan, with VMA_STATIC_VULKAN_FUNCTIONS=0 and
 # VMA_DYNAMIC_VULKAN_FUNCTIONS=1 (functions come from volk).
-# TODO(M1): link Vulkan::Headers once the Vulkan-Headers submodule is added.
 set(VMA_BUILD_SAMPLES       OFF CACHE BOOL "" FORCE)
 set(VMA_BUILD_DOCUMENTATION OFF CACHE BOOL "" FORCE)
 set(VMA_ENABLE_INSTALL      OFF CACHE BOOL "" FORCE)
 add_subdirectory(VulkanMemoryAllocator SYSTEM EXCLUDE_FROM_ALL)
+target_link_libraries(VulkanMemoryAllocator INTERFACE Vulkan::Headers)
 
-tp_folder(glfw TracyClient spdlog)
+tp_folder(glfw TracyClient spdlog volk)
