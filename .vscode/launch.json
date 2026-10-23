@@ -1,0 +1,27 @@
+{
+    // Debugs the launch target selected in the CMake Tools status bar.
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug (Windows)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${command:cmake.launchTargetPath}",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Debug (Linux)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${command:cmake.launchTargetPath}",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "setupCommands": [
+                { "description": "Pretty-print STL types", "text": "-enable-pretty-printing", "ignoreFailures": true }
+            ]
+        }
+    ]
+}
