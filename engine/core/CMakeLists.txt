@@ -1,4 +1,5 @@
 add_library(lmao_core STATIC
+    io/path.h
     log/log.h
     log/log.cpp
     math/math.h

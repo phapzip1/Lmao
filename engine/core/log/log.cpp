@@ -1,5 +1,7 @@
 #include "core/log/log.h"
 
+#include "core/io/path.h"
+
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #if defined(_WIN32)
@@ -52,36 +54,43 @@ namespace Lmao::Log
             return logger;
         }
 
+        void init_lock(State &s, const Config &config)
+        {
+            if (s.initialized)
+                return;
+
+            auto console = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+            console->set_pattern(console_pattern);
+            s.sinks.push_back(console);
+
+#if defined(_WIN32)
+            // Visual Studio / debugger Output window.
+            auto debugger = std::make_shared<spdlog::sinks::msvc_sink_mt>(/*check_debugger_present=*/true);
+            debugger->set_pattern(console_pattern);
+            s.sinks.push_back(debugger);
+#endif
+
+            if (!config.FilePath.empty())
+            {
+                auto file = std::make_shared<spdlog::sinks::basic_file_sink_mt>(PathFromUtf8(config.FilePath).native(), /*truncate=*/true);
+                file->set_pattern(file_pattern);
+                s.sinks.push_back(file);
+            }
+
+            s.level = to_spdlog(config.MinLevel);
+            spdlog::set_default_logger(make_logger(s, "core"));
+            s.initialized = true;
+        }
+
+
+
     } // namespace
 
     void Init(const Config &config)
     {
         State &s = state();
         std::lock_guard lock(s.mutex);
-        if (s.initialized)
-            return;
-
-        auto console = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-        console->set_pattern(console_pattern);
-        s.sinks.push_back(console);
-
-#if defined(_WIN32)
-        // Visual Studio / debugger Output window.
-        auto debugger = std::make_shared<spdlog::sinks::msvc_sink_mt>(/*check_debugger_present=*/true);
-        debugger->set_pattern(console_pattern);
-        s.sinks.push_back(debugger);
-#endif
-
-        if (config.FilePath)
-        {
-            auto file = std::make_shared<spdlog::sinks::basic_file_sink_mt>(config.FilePath, /*truncate=*/true);
-            file->set_pattern(file_pattern);
-            s.sinks.push_back(file);
-        }
-
-        s.level = to_spdlog(config.MinLevel);
-        spdlog::set_default_logger(make_logger(s, "core"));
-        s.initialized = true;
+        init_lock(s, config);
     }
 
     void Shutdown()
@@ -99,11 +108,11 @@ namespace Lmao::Log
 
     spdlog::logger *Channel(std::string_view name)
     {
-        if (!state().initialized)
-            Init();
-
         State &s = state();
         std::lock_guard lock(s.mutex);
+        if (!state().initialized)
+            init_lock(s, {});
+
         std::string key(name);
         if (auto existing = spdlog::get(key))
             return existing.get();

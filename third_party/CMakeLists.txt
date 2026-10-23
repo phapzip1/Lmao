@@ -29,6 +29,10 @@ set(SPDLOG_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
 set(SPDLOG_BUILD_TESTS   OFF CACHE BOOL "" FORCE)
 set(SPDLOG_BUILD_BENCH   OFF CACHE BOOL "" FORCE)
 set(SPDLOG_INSTALL       OFF CACHE BOOL "" FORCE)
+if(WIN32)
+    # filename_t = std::wstring, so UTF-8 paths (via Lmao::PathFromUtf8) open correctly.
+    set(SPDLOG_WCHAR_FILENAMES ON CACHE BOOL "" FORCE)
+endif()
 add_subdirectory(spdlog SYSTEM EXCLUDE_FROM_ALL)
 
 # --- glm (MIT) ---------------------------------------------------------------

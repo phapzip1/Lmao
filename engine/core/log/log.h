@@ -29,7 +29,7 @@ namespace Lmao::Log
     struct Config
     {
         Level MinLevel = Level::Trace; // runtime filter on top of the compile-time one
-        const char *FilePath = nullptr; // UTF-8; nullptr disables the file sink
+        std::string_view FilePath; // UTF-8; empty disables the file sink
     };
 
     // Creates the shared sinks and the "core" channel. Call once at startup, before other threads log.
