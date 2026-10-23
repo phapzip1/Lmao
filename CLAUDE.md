@@ -22,3 +22,9 @@ C++20 game engine. Vulkan first (D3D12, Metal, WebGPU later), GLFW as one platfo
 
 ## Build
 See the `engine-build` skill. CMake ≥ 3.25 + Ninja, presets in `CMakePresets.json`.
+
+## Docs
+- `docs/architecture.md`: overall design, RHI, Vulkan backend, platform layer, libraries.
+- `docs/decisions/`: one record per decision. Add a new record instead of rewriting an accepted one.
+- `docs/milestones.md`: current milestone, exit criteria, status. Keep it in sync with real progress.
+- `docs/debugging.md`: debugging infrastructure and techniques.
