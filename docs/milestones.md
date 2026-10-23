@@ -2,7 +2,7 @@
 
 | # | Name | Status | Started | Done | Tag |
 |---|------|--------|---------|------|-----|
-| M0 | Foundation | 🚧 In progress | 2026-10-21 | | |
+| M0 | Foundation | ✅ Done | 2026-10-21 |2026-10-24| |
 | M1 | Vulkan bootstrap | ⏳ Planned | | | |
 | M2 | Render core | ⏳ Planned | | | |
 | M3 | Memory + jobs | ⏳ Planned | | | |
@@ -32,11 +32,11 @@ Rules:
 **Exit criteria**
 - [x] CMake ≥ 3.25 + Ninja, `CMakePresets.json` (`windows-debug`, `windows-release`, `linux-debug`)
 - [x] `third_party/` submodules for GLFW and Tracy, wrapped in `third_party/CMakeLists.txt`
-- [ ] Logging, asserts (break into debugger), crash dumps (`MiniDumpWriteDump`). Logging and asserts work; no crash dump has been written yet. Trigger `LMAO_FATAL` once and open the `.dmp` in Visual Studio
+- [x] Logging, asserts (break into debugger), crash dumps (`MiniDumpWriteDump`). Verified 2026-10-24: `LMAO_FATAL` logged, minidump written to `crashes/` and opened in Visual Studio
 - [x] Platform interface (`core/platform/`) with a GLFW backend: window opens, input events are logged
 - [x] High-resolution timer, basic math, basic containers
 - [x] Tracy client connects and shows frame zones (Profiler 0.14.1, 2026-10-24)
-- [ ] CI builds on Windows (MSVC or clang-cl) and Linux (GCC or Clang)
+- [x] CI builds on Windows (MSVC or clang-cl) and Linux (GCC or Clang). `windows-debug`, `windows-release` and `linux-debug` pass
 
 **Tasks**
 - [x] Git repository (branch `dev`)
@@ -47,7 +47,8 @@ Rules:
 - [x] `third_party/LICENSES.md`
 - [x] Compiler warning settings (`/W4 /WX`, `-Wall -Wextra -Werror`) for engine targets (`cmake/LmaoWarnings.cmake`)
 - [x] `windows-debug` and `windows-release` build
-- [ ] `linux-debug` builds (first done by CI)
+- [x] `linux-debug` builds (in CI)
+- [ ] Pin GLFW to a release tag (currently one commit past `3.5.1`)
 
 **Notes / decisions**
 - 2026-10-23: CMake 4.5 adds `import std` support to every C++20 target with module scanning on, which broke the C-only `glfw` target under Ninja. Module scanning is off project-wide (`CMAKE_CXX_SCAN_FOR_MODULES OFF`); the engine doesn't use C++ modules.
@@ -55,7 +56,9 @@ Rules:
 - 2026-10-24: Tracy pinned to `v0.14.1` so the official prebuilt profiler (same protocol version) can connect. The profiler goes in `tools/bin/tracy/`.
 - On Windows, `sleep_for(16ms)` lasts about 31 ms because of the default 15.6 ms timer tick. Real frame pacing will come from vsync (M1).
 
-**Demo:**
+**Demo:** the sandbox profiled in Tracy 0.14.1: frame marks, the "Simulated work" zone and the frame-time plot.
+
+![M0: lmao_sandbox in Tracy Profiler 0.14.1](demos/m0.png)
 
 ---
 
