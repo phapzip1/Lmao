@@ -1,0 +1,2114 @@
+
+❯ I'm going to develop a game engine from scratch which initially has these
+  functionalities:  2D or 3D renderer, physics engine, audio engine, scripting,
+  animation, artificial intelligence, networking, streaming, memory
+  management, threads, localization support, scene graph, and cinematics.
+  Currently, I want to implement it using C++ with Vulkan Render API and GLFW.
+  Give me Initial architecture, milestone planning, Vulkan design decisions,
+  and difficult debugging.
+
+● Game Engine Plan: C++ / Vulkan / GLFW
+
+  1. Initial Architecture
+
+  Guiding principles
+
+  1. Strict layering. A lower layer never includes headers from a higher one.
+     This one rule keeps a 13-subsystem engine from turning into spaghetti.
+  2. Handles, not pointers. Every resource, entity and asset is a 32/64-bit
+     handle with an index and a generation counter. Stale handles get caught
+     instead of becoming use-after-free bugs. This matters a lot once scripting,
+     streaming and networking all hold references.
+  3. Data-oriented core. Use ECS for gameplay data. The "scene graph" is a
+     transform hierarchy built on top of the ECS, not a deep Node* tree.
+  4. Every subsystem is a job producer. Nothing owns a thread except the main
+     thread (GLFW needs it), the audio thread, the IO thread and the network
+     thread.
+  5. Write it yourself where you learn something, use a library where you don't.
+     Building a PNG decoder from scratch teaches you nothing about engines.
+
+  Layer diagram
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │ L5  Tools / Editor      (ImGui editor, asset cooker, profilers)   │
+  ├──────────────────────────────────────────────────────────────────┤
+  │ L4  Gameplay Framework  Scripting · AI · Cinematics · Game modes  │
+  ├──────────────────────────────────────────────────────────────────┤
+  │ L3  Engine Systems      Renderer(2D/3D) · Physics · Audio ·       │
+  │                         Animation · Networking · Localization     │
+  ├──────────────────────────────────────────────────────────────────┤
+  │ L2  Scene & Resources   ECS · Scene graph (transforms) ·          │
+  │                         Asset/Resource manager · Streaming        │
+  ├──────────────────────────────────────────────────────────────────┤
+  │ L1  RHI                 Thin Vulkan abstraction (device, buffers, │
+  │                         textures, pipelines, cmd lists, graph)    │
+  ├──────────────────────────────────────────────────────────────────┤
+  │ L0  Core                Platform(GLFW) · Memory · Jobs/Threads ·  │
+  │                         Math · Containers · Log/Assert · VFS ·    │
+  │                         Reflection/Serialization · Profiling      │
+  └──────────────────────────────────────────────────────────────────┘
+
+  Directory layout
+
+  engine/
+    core/        platform/ memory/ jobs/ math/ containers/ log/ io/ reflect/
+  profile/
+    rhi/         vulkan/  (device, swapchain, resources, descriptors, cmd, sync)
+    render/      rendergraph/ renderer3d/ renderer2d/ materials/ debugdraw/
+  ui_text/
+    scene/       ecs/ hierarchy/ components/ serialization/
+    resource/    asset_db/ loaders/ streaming/
+    physics/     collision/ broadphase/ solver/ queries/
+    audio/       device/ mixer/ dsp/ spatial/
+    anim/        skeleton/ clips/ blendtree/ statemachine/ ik/
+    script/      lua_vm/ bindings/ hotreload/
+    ai/          bt/ navmesh/ pathfinding/ perception/
+    net/         transport/ reliability/ replication/ prediction/
+    loc/         string_tables/ text_shaping/
+    cinematics/  timeline/ tracks/ sequencer/
+    app/         Application, main loop, config
+  tools/         asset_cooker/ editor/ shader_compiler/
+  game/          sample projects
+  third_party/
+  shaders/
+
+  Core subsystem decisions
+
+  System: Memory
+  Recommendation: Global-new hooks with tagged tracking per subsystem.
+  Allocators: frame linear allocator (double-buffered, reset each frame), pool
+  allocators for fixed-size objects (components, nodes), TLSF for general heap
+  use, and stack/scoped arenas for loading. Add guard bytes and poisoning in
+  debug builds.
+  ────────────────────────────────────────
+  System: Threads / jobs
+  Recommendation: Work-stealing job system with N−1 workers and a counter-based
+  wait (WaitForCounter). Start without fibers and add them later if you need
+  them. Use a frame graph: Input → Script → AI → Physics(fixed) → Anim →
+  Transform update → Render extract → Render submit.
+  ────────────────────────────────────────
+  System: Frame model
+  Recommendation: Fixed-timestep simulation (e.g. 60 Hz) with interpolation for
+  rendering. Render runs one frame behind the simulation: extract a render
+  snapshot, then record it in parallel while the next sim frame runs.
+  ────────────────────────────────────────
+  System: ECS
+  Recommendation: Archetype- or sparse-set-based (sparse-set is easier to
+  write).
+  Components are POD where possible. Transform + Parent + Children components
+  form the scene graph. Dirty-flag propagation runs in a topologically sorted
+  pass.
+  ────────────────────────────────────────
+  System: Reflection
+  Recommendation: A macro- or codegen-based reflection system early on. It is
+  what makes serialization, the editor inspector, script bindings and network
+  replication cheap to write. This is one of the highest-leverage things you
+  can build.
+  ────────────────────────────────────────
+  System: Resources / streaming
+  Recommendation: An asset DB with GUIDs and a cooked binary format (an offline
+  cooker converts glTF/PNG/WAV into engine-ready blobs). Asset states go
+  Unloaded → Loading → Loaded → Resident(GPU). A dedicated IO thread does async
+   reads, and a transfer queue does GPU uploads. Ref-counted handles plus a
+  priority queue drive streaming (distance, screen size).
+  ────────────────────────────────────────
+  System: Physics
+  Recommendation: Write your own: BVH broadphase, SAT/GJK+EPA narrowphase,
+  sequential-impulse solver with warm starting, sleeping, and CCD for fast
+  bodies. Keep the API narrow (PhysicsWorld, Body, Shape, queries) so you could
+   swap in Jolt later if your own solver hits a wall.
+  ────────────────────────────────────────
+  System: Audio
+  Recommendation: Use miniaudio for device output only. Write your own mixer,
+  voices, buses, DSP (low-pass, reverb) and 3D spatialization (panning plus
+  distance attenuation, and HRTF later). The audio thread communicates through
+  lock-free ring buffers only.
+  ────────────────────────────────────────
+  System: Animation
+  Recommendation: Skeleton, clips (compressed keys), sampling, a blend tree
+  (1D/2D blend spaces), a state machine with transitions, two-bone IK, root
+  motion. GPU skinning via a storage buffer of joint matrices.
+  ────────────────────────────────────────
+  System: Scripting
+  Recommendation: Lua 5.4 or LuaJIT with sol2 bindings, generated from your
+  reflection data. Scripts only ever see entity handles. Hot reload by file
+  watching. Run scripts in a deterministic phase, never inside jobs at first.
+  ────────────────────────────────────────
+  System: AI
+  Recommendation: Behavior trees with a blackboard, utility AI later, navmesh
+  generation via Recast/Detour (or your own once you understand it), A* with a
+  time-sliced path request queue, and a perception system (sight cones, hearing
+   events).
+  ────────────────────────────────────────
+  System: Networking
+  Recommendation: UDP with your own reliability layer (sequence numbers, ack
+  bitfields, channels). Client-server authoritative model, snapshot replication
+   with delta compression, client-side prediction and reconciliation,
+  interpolation of remote entities. Mark replicated fields through reflection.
+  ────────────────────────────────────────
+  System: Localization
+  Recommendation: UTF-8 everywhere. Use string tables keyed by ID
+  ("menu.start"),
+  loaded per locale, with plural and format rules. Use FreeType + HarfBuzz for
+  shaping (needed for Arabic, Thai, Vietnamese diacritics and similar). Render
+  MSDF font atlases for crisp scaling.
+  ────────────────────────────────────────
+  System: Cinematics
+  Recommendation: A timeline asset made of tracks (transform, camera, animation,
+
+  audio event, script event, property curve, subtitle). The sequencer evaluates
+   them at time t and writes into the ECS. Support scrubbing in the editor, and
+   make the timeline's audio sync to the audio clock.
+  ────────────────────────────────────────
+  System: 2D / 3D
+  Recommendation: One renderer with two front-ends. 2D is a sprite batcher
+  (instanced quads, texture arrays or bindless), tilemaps and an orthographic
+  camera, all going through the same render graph.
+
+  Libraries worth using (not the interesting part)
+
+  GLFW, Vulkan SDK, volk (loader), VMA (memory), glm (or your own math), Dear
+  ImGui, stb_image, fastgltf/cgltf, miniaudio, Lua/sol2, FreeType/HarfBuzz,
+  Tracy (profiler), SPIRV-Reflect, DXC or glslang (or Slang). Build with CMake +
+  vcpkg, using MSVC or clang-cl.
+
+  ---
+
+  2. Milestone Planning
+
+  These are rough estimates for one experienced developer working part-time;
+  they shrink a lot full-time. Each milestone ends with a playable or visible
+  demo. If you can't show it, it isn't done.
+
+  #: M0
+  Milestone: Foundation
+  Deliverables: CMake, logging, asserts, crash dumps (MiniDumpWriteDump), GLFW
+  window, input, timer, math, basic containers, Tracy
+  Exit criteria: Window opens, input logged, profiler connects
+  Est.: 2–3 wk
+  ────────────────────────────────────────
+  #: M1
+  Milestone: Vulkan bootstrap
+  Deliverables: Instance, debug messenger, device selection, swapchain,
+  frames-in-flight, triangle, resize handling
+  Exit criteria: Clean validation (incl. sync validation), survives
+  resize/minimize
+  Est.: 2–3 wk
+  ────────────────────────────────────────
+  #: M2
+  Milestone: Render core
+  Deliverables: VMA, staging uploads, bindless descriptors, textured mesh,
+  camera, depth, ImGui, shader hot reload, pipeline cache
+  Exit criteria: glTF model rendered, shaders hot-reload
+  Est.: 4–6 wk
+  ────────────────────────────────────────
+  #: M3
+  Milestone: Memory + jobs
+  Deliverables: Allocators, memory tracking UI, job system, parallel command
+  recording
+  Exit criteria: Tracy shows work spread across cores, no leaks at exit
+  Est.: 3–4 wk
+  ────────────────────────────────────────
+  #: M4
+  Milestone: Scene + assets
+  Deliverables: ECS, transform hierarchy, reflection, scene serialization, asset
+
+  cooker, asset DB
+  Exit criteria: Load/save scene, spawn 10k entities
+  Est.: 5–7 wk
+  ────────────────────────────────────────
+  #: M5
+  Milestone: Render graph + lighting
+  Deliverables: Render graph with auto barriers, PBR, shadow maps, HDR +
+  tonemap,
+  frustum culling, debug draw
+  Exit criteria: Lit scene at stable frame rate, graph visualizer
+  Est.: 6–8 wk
+  ────────────────────────────────────────
+  #: M6
+  Milestone: 2D + text + localization
+  Deliverables: Sprite batcher, tilemaps, MSDF text, HarfBuzz shaping, string
+  tables, locale switching
+  Exit criteria: 2D demo with switchable language (incl. a complex-script
+  language)
+  Est.: 3–5 wk
+  ────────────────────────────────────────
+  #: M7
+  Milestone: Physics
+  Deliverables: Shapes, broadphase, narrowphase, solver, raycasts, triggers,
+  character controller
+  Exit criteria: Stable stack of 20 boxes, no tunneling
+  Est.: 6–10 wk
+  ────────────────────────────────────────
+  #: M8
+  Milestone: Audio
+  Deliverables: Mixer, streaming music, 3D sounds, buses, ducking
+  Exit criteria: Positional audio in scene, no glitches under load
+  Est.: 3–4 wk
+  ────────────────────────────────────────
+  #: M9
+  Milestone: Animation
+  Deliverables: Skinning, clip playback, blend tree, state machine, IK
+  Exit criteria: Walking/running character, blends on input
+  Est.: 5–7 wk
+  ────────────────────────────────────────
+  #: M10
+  Milestone: Scripting
+  Deliverables: Lua VM, reflection-driven bindings, hot reload, script
+  components
+  Exit criteria: Gameplay written entirely in Lua
+  Est.: 3–5 wk
+  ────────────────────────────────────────
+  #: M11
+  Milestone: AI
+  Deliverables: Behavior trees, navmesh, pathfinding, perception
+  Exit criteria: NPCs patrol, chase and lose the player
+  Est.: 4–6 wk
+  ────────────────────────────────────────
+  #: M12
+  Milestone: Streaming
+  Deliverables: Async IO thread, transfer queue, LOD/mip streaming, memory
+  budget
+  Exit criteria: Open level larger than VRAM budget, no hitches above 2 ms
+  Est.: 4–6 wk
+  ────────────────────────────────────────
+  #: M13
+  Milestone: Networking
+  Deliverables: Transport, reliability, replication, prediction, interpolation
+  Exit criteria: 2–4 players over simulated 150 ms / 5% loss
+  Est.: 8–12 wk
+  ────────────────────────────────────────
+  #: M14
+  Milestone: Cinematics
+  Deliverables: Timeline asset, tracks, editor scrubbing, subtitles (via loc)
+  Exit criteria: Scripted cutscene with camera, anim, audio and subtitles
+  Est.: 3–5 wk
+  ────────────────────────────────────────
+  #: M15
+  Milestone: Editor
+  Deliverables: Scene editor, inspector (reflection), gizmos, play-in-editor
+  Exit criteria: Build a level without touching code
+  Est.: ongoing
+
+  Why this order:
+  - Memory and jobs come after you have something rendering, because you'll
+    design them better once you've seen real workloads.
+  - Reflection lands in M4 because scripting, networking, the editor and
+    serialization all depend on it.
+  - Networking comes late because it touches everything: physics determinism,
+    the ECS, scripting. But keep a "could this be replicated?" mindset from M4
+    onward (separate simulation state from presentation state, use fixed
+    timestep, use handles).
+  - Vertical slices beat horizontal layers. After M9, build a tiny game. It will
+    expose more bad APIs than any design review.
+
+  ---
+
+  3. Vulkan Design Decisions
+
+  Baseline: target Vulkan 1.3
+
+  1.3 removes most of the historic pain. Require these features:
+
+  ┌───────────────────────────────────┬─────────────────────────────────────┐
+  │              Feature              │                 Why                 │
+  ├───────────────────────────────────┼─────────────────────────────────────┤
+  │                                   │ No VkRenderPass or VkFramebuffer    │
+  │ Dynamic rendering                 │ objects. Far simpler, especially    │
+  │                                   │ with a render graph.                │
+  ├───────────────────────────────────┼─────────────────────────────────────┤
+  │                                   │ Saner barrier API                   │
+  │ Synchronization2                  │ (vkCmdPipelineBarrier2, per-barrier │
+  │                                   │  stage masks).                      │
+  ├───────────────────────────────────┼─────────────────────────────────────┤
+  │                                   │ One semaphore per queue tracks GPU  │
+  │ Timeline semaphores               │ progress. Ideal for deletion        │
+  │                                   │ queues, streaming and async         │
+  │                                   │ compute.                            │
+  ├───────────────────────────────────┼─────────────────────────────────────┤
+  │                                   │ One global descriptor set holding   │
+  │ Descriptor indexing (bindless)    │ large arrays of textures and        │
+  │                                   │ buffers. Materials just store       │
+  │                                   │ indices.                            │
+  ├───────────────────────────────────┼─────────────────────────────────────┤
+  │                                   │ Pass GPU pointers via push          │
+  │ Buffer device address             │ constants and skip buffer           │
+  │                                   │ descriptors. Great for GPU-driven   │
+  │                                   │ rendering later.                    │
+  ├───────────────────────────────────┼─────────────────────────────────────┤
+  │ Maintenance4/5,                   │ Fixes swapchain and present-fence   │
+  │ VK_EXT_swapchain_maintenance1     │ pain points.                        │
+  │ where available                   │                                     │
+  └───────────────────────────────────┴─────────────────────────────────────┘
+
+  Key decisions
+
+  1. Thin RHI, not a multi-API abstraction.
+  Wrap Vulkan in engine types (BufferHandle, TextureHandle, PipelineHandle,
+  CommandList), but don't design for DX12/Metal yet. The wrapper's job is
+  lifetime management, handle validation and debug naming, not portability.
+
+  2. Memory: VMA, always.
+  Never call vkAllocateMemory per resource, because there's a driver limit on
+  allocation count (often 4096). Use one VMA allocator and separate pools for
+  streaming textures if you need budget control. Query VK_EXT_memory_budget.
+
+  3. Frames in flight = 2.
+  Each frame owns its command pools (one per thread), a linear
+  descriptor/uniform upload ring, and a deletion queue. A resource is destroyed
+  only once the GPU's timeline value passes the frame that last used it.
+
+  struct FrameContext {
+      VkCommandPool        cmdPools[MAX_THREADS];   // reset whole pool per
+  frame
+      LinearGpuAllocator   uploadRing;              // per-frame
+  constants/staging
+      DeletionQueue        deletions;               // freed when timeline >=
+  signalValue
+      uint64_t             signalValue;             // timeline semaphore value
+      VkSemaphore          imageAcquired;
+  };
+  // Note: render-finished semaphores are per *swapchain image*, not per frame.
+
+  4. Swapchain.
+  - Use FIFO by default (guaranteed available, vsync) and MAILBOX if available
+    for low latency.
+  - Recreate on VK_ERROR_OUT_OF_DATE_KHR, on SUBOPTIMAL, and on GLFW framebuffer
+    resize.
+  - Skip rendering while the window is minimized (extent 0×0).
+  - Keep one render-finished semaphore per swapchain image. This is the most
+    common validation error in modern tutorials.
+
+  5. Bindless descriptors.
+  A single descriptor set at set 0 contains:
+  - binding 0: sampler2D textures[]
+  - binding 1: storage buffers
+  - binding 2: samplers
+  - binding 3: storage images
+
+  All are flagged UPDATE_AFTER_BIND | PARTIALLY_BOUND. Per-draw data goes in
+  push constants (≤128 bytes guaranteed), holding indices and device addresses.
+  Use nonuniformEXT when an index varies within a draw.
+
+  6. Shaders.
+  Pick HLSL via DXC or Slang; both are better than GLSL for a large codebase.
+  Compile offline in the cooker, use runtime compilation for hot reload, and
+  drive pipeline layouts from SPIRV-Reflect. Persist the VkPipelineCache to
+  disk, and compile pipelines on worker threads.
+
+  7. Render graph (from M5).
+  Each pass declares its reads and writes. The graph then:
+  - topologically sorts the passes,
+  - culls passes nobody reads,
+  - inserts barriers and layout transitions automatically,
+  - aliases transient memory.
+
+  Start simple: no aliasing, single queue. Add async compute later. Doing this
+  early saves you from hand-written barriers, the #1 source of Vulkan bugs.
+
+  8. Queues.
+  - Graphics+present queue: everything at first.
+  - Transfer queue: streaming uploads (requires queue-family ownership
+    transfers, or CONCURRENT sharing at a small cost).
+  - Async compute queue: later, for culling, particles and post-processing.
+
+  9. Multithreaded recording.
+  Command pools are not thread-safe, so use one per thread per frame. Workers
+  record into separate primary command buffers (or secondaries) and submit them
+  in order. vkQueueSubmit2 needs external synchronization, so one thread
+  submits.
+
+  10. Conventions (fix these on day 1):
+  - Reverse-Z with D32_SFLOAT: clear depth to 0, compare with GREATER. Much
+    better precision.
+  - Y flip via negative viewport height (core since 1.1), so your math can stay
+    Y-up.
+  - Right-handed world, column-major matrices. Document it in one header and
+    never deviate.
+  - Name every Vulkan object with vkSetDebugUtilsObjectNameEXT and wrap passes
+    in vkCmdBeginDebugUtilsLabelEXT. RenderDoc becomes 10× more useful.
+
+  11. Later: GPU-driven rendering.
+  Store meshes in mega-buffers, do frustum and occlusion culling in a compute
+  shader, and draw with vkCmdDrawIndexedIndirectCount. Design the bindless/BDA
+  layout now so this is an extension rather than a rewrite.
+
+  ---
+
+  4. Difficult Debugging
+
+  Build the debugging infrastructure first (M0–M2)
+
+  - Validation layers in debug builds, with synchronization validation on (use
+    vkconfig), and GPU-assisted validation on demand.
+  - Debug-utils messenger that breaks into the debugger on errors.
+  - Object names and labels on everything.
+  - RenderDoc integration (in-app capture hotkey through the RenderDoc API).
+  - Tracy for CPU zones, GPU zones, lock contention and memory.
+  - Crash dumps, plus GPU crash diagnostics: Nsight Aftermath (NVIDIA), Radeon
+    GPU Detective (AMD), VK_EXT_device_fault, and your own breadcrumbs (write
+    markers into a host-visible buffer with vkCmdFillBuffer and read the last
+    one after DEVICE_LOST).
+  - In-engine ImGui panels: memory per tag, job timeline, render graph view,
+    physics debug draw, network stats.
+  - Input recording and replay with deterministic seeds. Essential for physics,
+    AI and network bugs.
+  - Test on at least two GPU vendors regularly. NVIDIA is forgiving and hides
+    bugs.
+
+  Common hard bugs: symptom → likely cause → fix
+
+  Vulkan / rendering
+
+  Symptom: VK_ERROR_DEVICE_LOST, random
+  Likely cause: Resource destroyed while GPU still using it; OOB shader access;
+  infinite loop
+  Fix / how to find: Deletion queue keyed on timeline value; enable
+  robustBufferAccess2; Aftermath / breadcrumbs
+  ────────────────────────────────────────
+  Symptom: Flickering, works sometimes
+  Likely cause: Missing or wrong barrier (wrong stage or access masks)
+  Fix / how to find: Sync validation; render graph; temporarily insert a full
+  barrier to confirm it's sync
+  ────────────────────────────────────────
+  Symptom: Fine on NVIDIA, broken on AMD/Intel
+  Likely cause: Wrong image layouts (NV ignores many); missing nonuniformEXT;
+  alignment assumptions
+  Fix / how to find: Validation; respect minUniformBufferOffsetAlignment etc.;
+  test cross-vendor
+  ────────────────────────────────────────
+  Symptom: Garbage values in uniforms
+  Likely cause: vec3 padding in std140/std430 vs C++ struct layout
+  Fix / how to find: Never use vec3 in buffers (use vec4); static_assert(sizeof)
+
+  and offsets against reflection
+  ────────────────────────────────────────
+  Symptom: Black screen, no errors
+  Likely cause: Culling winding flipped by Y flip; reverse-Z with wrong
+  clear/compare; viewport 0; descriptor never written
+  Fix / how to find: RenderDoc → pipeline state, mesh viewer, pixel history
+  ────────────────────────────────────────
+  Symptom: Crash on resize/minimize
+  Likely cause: Recreating swapchain with in-flight resources; 0×0 extent
+  Fix / how to find: Wait on frame fences before recreate; skip frame when
+  minimized
+  ────────────────────────────────────────
+  Symptom: Hitches every few seconds
+  Likely cause: Pipeline compiled on first use; synchronous uploads
+  Fix / how to find: Pipeline cache + prewarm; async transfer queue
+  ────────────────────────────────────────
+  Symptom: Validation errors at shutdown
+  Likely cause: Wrong destruction order; missing vkDeviceWaitIdle
+  Fix / how to find: Destroy in reverse creation order; flush deletion queues
+
+  Engine systems
+
+  Area: Memory
+  Hard bugs: Corruption caused far from where it shows up; custom allocators
+  hide
+  bugs from ASan
+  Strategy: Guard bytes and fill patterns (0xCD/0xDD); ASan manual poisoning
+  (ASAN_POISON_MEMORY_REGION) inside your allocators; a build flag that routes
+  all allocators to malloc
+  ────────────────────────────────────────
+  Area: Threads
+  Hard bugs: Races, deadlocks, false sharing, "only in Release"
+  Strategy: Thread sanitizer (clang), assert-owning-thread checks, alignas(64)
+  hot counters, Tracy lock view, a "single-thread job mode" toggle to isolate
+  bugs
+  ────────────────────────────────────────
+  Area: Physics
+  Hard bugs: Jitter, explosions, tunneling, non-determinism
+  Strategy: Fixed timestep, warm starting, sub-stepping, CCD; debug-draw
+  contacts
+  and normals; record and replay a single frame; /fp:precise and a stable
+  iteration order for determinism
+  ────────────────────────────────────────
+  Area: Animation
+  Hard bugs: Mangled skeletons, "candy wrapper" twisting
+  Strategy: Row- vs column-major mismatch and wrong inverse bind matrices are
+  the
+  usual causes; debug-draw the skeleton in bind pose first
+  ────────────────────────────────────────
+  Area: Audio
+  Hard bugs: Pops, crackles, dropouts
+  Strategy: Never lock, allocate or do IO on the audio thread; lock-free queues;
+
+  log callback overruns
+  ────────────────────────────────────────
+  Area: Scripting
+  Hard bugs: Dangling references to deleted entities, GC spikes
+  Strategy: Scripts hold only generational handles; incremental GC with a
+  per-frame step budget; line-level error reporting with stack traces
+  ────────────────────────────────────────
+  Area: Streaming
+  Hard bugs: Pop-in, hitches, assets "stuck loading"
+  Strategy: Visualize asset states in-engine; per-frame upload budget; assert
+  state transitions
+  ────────────────────────────────────────
+  Area: Networking
+  Hard bugs: Desync, rubber-banding, bugs that only appear under latency
+  Strategy: Simulate latency, loss and jitter (clumsy on Windows, or built into
+  your transport); log and diff snapshots per tick; replay recorded packet
+  streams
+  ────────────────────────────────────────
+  Area: Localization
+  Hard bugs: Missing glyphs, broken RTL, overflowing UI text
+  Strategy: A pseudo-locale ([!!Ŝţŕîñĝ Ŵîđéñéđ!!]) to catch hard-coded strings
+  and layout overflow early
+
+  Debugging method for the really bad ones
+
+  1. Reproduce deterministically. Record inputs and seeds and replay them.
+  2. Bisect. Use git bisect on commits, and toggle features at runtime (disable
+     passes, systems or threads one by one).
+  3. Shrink the surface. Single-threaded jobs, full barriers everywhere, the
+     malloc allocator, CPU-only path.
+  4. Check across vendors and builds. If it happens only on one GPU or only in
+     Release, suspect sync, uninitialized memory or undefined behavior.
+  5. Write the regression test (headless rendering to an image with diffing, or
+     a physics scene snapshot) before fixing it.
+
+  ---
+
+  Advice on scope
+
+  These 13 systems add up to commercial-engine scope. To keep it achievable:
+  - Ship tiny games along the way (a 2D platformer after M6/M7, a 3D arena
+    shooter after M11, a 2-player version after M13). Real games show you which
+    APIs actually matter.
+  - Don't build the editor until M10 or later. Until then, ImGui panels and text
+    scene files are enough.
+  - Keep a docs/decisions/ folder of short ADRs (architecture decision records)
+    so you remember why you chose reverse-Z or a sparse-set ECS six months from
+    now.
+
+  Your working directory d:\NotGame\Lmao is empty right now. If you like, I can
+  set up the M0/M1 skeleton there (CMake, vcpkg manifest, folder layout, GLFW
+  window and a validated Vulkan 1.3 triangle with frames-in-flight), or turn
+  this plan into a shareable document.
+
+❯ later on, I want my game engine to be platform-agnostic and RenderAPI
+  agnostic (OpenGL, DirectX, Vulkan, ...)
+
+● Making the Engine Platform- and Render-API-Agnostic
+
+  This changes one recommendation from my previous answer. I said to build a
+  thin Vulkan wrapper and not design for DX12/Metal yet. With your new goal,
+  design the RHI (rendering hardware interface) to be backend-agnostic now, but
+  implement only Vulkan at first. Then add a second backend early, around the
+  render graph milestone, to prove the abstraction works. If you abstract late,
+  you rewrite the renderer. If you abstract early but only ever test against one
+  API, you get an abstraction shaped exactly like Vulkan that won't fit
+  anything else.
+
+  ---
+
+  1. Choose the abstraction level: a "modern explicit" RHI
+
+  Model the RHI on the common ground of Vulkan, D3D12 and Metal: explicit
+  command lists, pipeline state objects, bindless resources, render passes
+  declared up front. Then make older or simpler APIs emulate that model. Don't
+  design around OpenGL or D3D11 semantics.
+
+  Concept: Device / queue
+  Vulkan: VkDevice, VkQueue
+  D3D12: ID3D12Device, command queue
+  Metal: MTLDevice, MTLCommandQueue
+  OpenGL 4.5/4.6: implicit context
+  ────────────────────────────────────────
+  Concept: Command list
+  Vulkan: VkCommandBuffer
+  D3D12: ID3D12GraphicsCommandList
+  Metal: MTLCommandBuffer + encoders
+  OpenGL 4.5/4.6: emulated (record, then replay on the GL thread)
+  ────────────────────────────────────────
+  Concept: Pipeline
+  Vulkan: VkPipeline
+  D3D12: PSO
+  Metal: MTLRenderPipelineState
+  OpenGL 4.5/4.6: emulated (program + cached state block)
+  ────────────────────────────────────────
+  Concept: Bindless
+  Vulkan: descriptor indexing
+  D3D12: descriptor heaps + root constants
+  Metal: argument buffers
+  OpenGL 4.5/4.6: ARB_bindless_texture or texture arrays
+  ────────────────────────────────────────
+  Concept: Barriers
+  Vulkan: vkCmdPipelineBarrier2
+  D3D12: enhanced barriers
+  Metal: mostly automatic, plus fences
+  OpenGL 4.5/4.6: glMemoryBarrier / mostly no-op
+  ────────────────────────────────────────
+  Concept: Render pass
+  Vulkan: dynamic rendering
+  D3D12: BeginRenderPass / OMSetRenderTargets
+  Metal: render pass descriptor
+  OpenGL 4.5/4.6: FBO bind + clear
+  ────────────────────────────────────────
+  Concept: GPU sync
+  Vulkan: timeline semaphore
+  D3D12: ID3D12Fence
+  Metal: MTLSharedEvent
+  OpenGL 4.5/4.6: glFenceSync
+
+  About OpenGL: it is by far the worst fit. It's single-threaded, its state is
+  implicit, and it has no real pipelines. Ask yourself why you need it. If the
+  answer is the web, WebGPU fits the modern model much better. If it's old
+  hardware, consider giving GL a reduced feature tier. I'd put GL last, or drop
+  it.
+
+  ---
+
+  2. RHI design
+
+  Rules that keep the abstraction honest
+
+  1. No backend headers in public RHI headers. vulkan.h and d3d12.h are included
+     only in rhi_vulkan/*.cpp and rhi_d3d12/*.cpp. Enforce it with CMake: the
+     renderer links only against rhi (the interface).
+  2. All resources are opaque handles (index + generation). Backends keep their
+     own pools.
+  3. Everything is created from descriptors (BufferDesc, TextureDesc,
+     PipelineDesc). These are plain structs, easy to hash, serialize and cache.
+  4. Abstract enums (Format, ResourceState, CompareOp, …) with translation
+     tables per backend.
+  5. Capabilities over assumptions. Query device->caps() for bindless, mesh
+     shaders, ray tracing, async compute and max push constants, and have the
+     renderer choose a path from that.
+  6. The render graph owns synchronization. It emits abstract ResourceState
+     transitions. Each backend maps them to real barriers, or ignores them
+     (Metal, GL).
+
+  Interface sketch
+
+  // rhi/Device.h — no backend includes
+  namespace rhi {
+
+  enum class Backend { Vulkan, D3D12, Metal, OpenGL, WebGPU, Null };
+
+  enum class ResourceState : uint32_t {
+      Undefined, CopySrc, CopyDst, ShaderRead, ShaderWrite,
+      RenderTarget, DepthWrite, DepthRead, Present, IndirectArg
+  };
+
+  struct BufferDesc  { uint64_t size; BufferUsage usage; MemoryType memory;
+  const char* debugName; };
+  struct TextureDesc { Extent3D extent; Format format; uint32_t mips, layers;
+  TextureUsage usage; const char* debugName; };
+
+  class CommandList {
+  public:
+      virtual ~CommandList() = default;
+      virtual void barrier(std::span<const ResourceTransition>) = 0;
+      virtual void beginRendering(const RenderingDesc&) = 0;
+      virtual void endRendering() = 0;
+      virtual void setPipeline(PipelineHandle) = 0;
+      virtual void pushConstants(const void* data, uint32_t size) = 0;  // root
+  constants / push constants / setBytes
+      virtual void setIndexBuffer(BufferHandle, uint64_t offset, IndexType) = 0;
+      virtual void drawIndexed(uint32_t indexCount, uint32_t instanceCount,
+  uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance) = 0;
+      virtual void drawIndexedIndirectCount(BufferHandle args, BufferHandle
+  count, uint32_t maxDraws) = 0;
+      virtual void dispatch(uint32_t x, uint32_t y, uint32_t z) = 0;
+      virtual void copyBuffer(BufferHandle src, BufferHandle dst, uint64_t size)
+  = 0;
+      virtual void beginMarker(const char* name) = 0;   // debug labels / PIX
+  events
+      virtual void endMarker() = 0;
+  };
+
+  class Device {
+  public:
+      virtual ~Device() = default;
+      virtual const DeviceCaps& caps() const = 0;
+
+      virtual BufferHandle   createBuffer(const BufferDesc&) = 0;
+      virtual TextureHandle  createTexture(const TextureDesc&) = 0;
+      virtual PipelineHandle createGraphicsPipeline(const GraphicsPipelineDesc&)
+  = 0;
+      virtual void destroy(BufferHandle) = 0;    // deferred internally until
+  GPU is done
+      virtual void destroy(TextureHandle) = 0;
+
+      virtual uint32_t bindlessIndex(TextureHandle) = 0;  // shader-visible
+  index
+      virtual uint64_t gpuAddress(BufferHandle) = 0;      // BDA / GPU VA;
+  caps-gated
+
+      virtual SwapchainHandle createSwapchain(const platform::NativeWindow&,
+  const SwapchainDesc&) = 0;
+      virtual CommandList*    beginCommandList(QueueType) = 0;
+      virtual SubmitTicket    submit(std::span<CommandList*>, QueueType) = 0;
+      virtual void            present(SwapchainHandle) = 0;
+      virtual void            waitIdle() = 0;
+  };
+
+  std::unique_ptr<Device> createDevice(Backend, const DeviceCreateInfo&);
+  }
+
+  Virtual calls are fine. One indirect call per command costs a few nanoseconds,
+  which is nothing next to driver work. Keep the interface coarse: no per-state
+  setters like setBlendMode, because state lives in pipelines. Compile in every
+  backend available on a platform and pick one at runtime (via command-line
+  flag or config), which makes A/B testing between backends trivial.
+
+  Add a Null backend immediately
+
+  rhi_null does nothing and returns valid handles. It is useful for:
+  - dedicated servers, which matter for your networking milestone,
+  - unit tests and CI without a GPU,
+  - checking that game code never depends on a real GPU.
+
+  ---
+
+  3. Shaders: one source language, many targets
+
+  This is the part people underestimate most.
+
+  Recommendation: Slang. It compiles one source to SPIR-V (Vulkan), DXIL
+  (D3D12), MSL (Metal), GLSL (GL) and WGSL (WebGPU), and it offers reflection.
+  Alternative: HLSL → DXC for DXIL and SPIR-V, then SPIRV-Cross for MSL and
+  GLSL.
+
+  What makes cross-compilation work is a fixed binding convention, so each
+  backend can map bindings mechanically:
+
+  push/root constants   (≤128 bytes: draw index, material index, buffer
+  addresses)
+  space0 / set0         global bindless: Texture2D[], RWTexture2D[],
+  SamplerState[], ByteAddressBuffer[]
+  space1 / set1         per-frame constants (camera, time, lights)
+
+  ┌────────────┬────────────┬──────────────────────────┬──────────┬──────────┐
+  │ Convention │   Vulkan   │          D3D12           │  Metal   │    GL    │
+  ├────────────┼────────────┼──────────────────────────┼──────────┼──────────┤
+  │            │            │                          │ setBytes │ UBO at   │
+  │ Push       │ push       │ root constants           │  /       │ binding  │
+  │ constants  │ constants  │                          │ argument │ 0        │
+  │            │            │                          │  buffer  │          │
+  ├────────────┼────────────┼──────────────────────────┼──────────┼──────────┤
+  │ Bindless   │ descriptor │ SM 6.6                   │ argument │ bindless │
+  │ set        │  indexing  │ ResourceDescriptorHeap[] │  buffer  │  ext or  │
+  │            │            │                          │ tier 2   │ arrays   │
+  └────────────┴────────────┴──────────────────────────┴──────────┴──────────┘
+
+  The offline cooker compiles every shader for every target and stores blobs per
+  backend in the asset. Runtime compilation is only for hot reload.
+
+  ---
+
+  4. Coordinate-system conventions: unify them once
+
+  Pick D3D/Vulkan conventions as the engine standard: depth range 0..1,
+  reverse-Z, texture UV origin top-left, right-handed world. Then fix each
+  backend at one point:
+
+  ┌─────────┬────────────────────────────────────────────────────────────────┐
+  │ Backend │                           Adjustment                           │
+  ├─────────┼────────────────────────────────────────────────────────────────┤
+  │ Vulkan  │ Negative viewport height (Y flip)                              │
+  ├─────────┼────────────────────────────────────────────────────────────────┤
+  │ D3D12   │ None                                                           │
+  ├─────────┼────────────────────────────────────────────────────────────────┤
+  │ Metal   │ None (same as D3D)                                             │
+  ├─────────┼────────────────────────────────────────────────────────────────┤
+  │ OpenGL  │ glClipControl(GL_UPPER_LEFT, GL_ZERO_TO_ONE) (GL 4.5). Gives   │
+  │         │ D3D-style depth and origin, so no shader changes are needed    │
+  └─────────┴────────────────────────────────────────────────────────────────┘
+
+  Projection matrices are computed once in engine math and never #ifdef'd per
+  backend.
+
+  ---
+
+  5. Platform abstraction
+
+  GLFW covers Windows, Linux and macOS, but not mobile, consoles or the web
+  (except through Emscripten). Treat GLFW as one backend of your platform layer,
+  not as the platform layer.
+
+  core/platform/          interface: Window, Input, FileSystem, Time,
+  Thread/Fiber,
+                          DynamicLibrary, Clipboard, Dialogs, CrashHandler,
+  Sockets
+  core/platform_glfw/     Window + Input on desktop
+  core/platform_win32/    files, threads, crash dumps (MiniDumpWriteDump),
+  sockets
+  core/platform_posix/    Linux/macOS equivalents
+  core/platform_android/  later (NativeActivity / GameActivity)
+
+  The window must expose native handles for surface creation, because each RHI
+  backend needs something different:
+
+  namespace platform {
+  struct NativeWindow {
+      enum class Type { Win32, X11, Wayland, Cocoa, Android, Web } type;
+      void* display;  // HINSTANCE / Display* / wl_display*
+      void* window;   // HWND / Window / wl_surface* / CAMetalLayer* /
+  ANativeWindow*
+  };
+  }
+
+  Window creation also depends on the backend. Use GLFW_NO_API for Vulkan, D3D12
+  and Metal, and request a context for GL. So the window gets created after the
+  backend is chosen.
+
+  Other places where platforms differ (they have to be correct from day 1):
+  - File paths: use a VFS with /-separated virtual paths. Convert to native
+    paths only inside the platform layer. Watch case sensitivity: Linux will
+    break Textures/Rock.png vs textures/rock.png.
+  - Text: UTF-8 internally. Convert to UTF-16 only at Win32 API boundaries.
+  - Threads: std::thread is fine. Affinity, priorities, fibers and thread names
+    are platform-specific, so put them behind the interface.
+  - Sockets: Winsock vs BSD sockets. Hide them behind net/transport.
+  - Compilers: build with MSVC and Clang (and GCC on Linux) from M0. Each
+    catches different undefined behavior and non-standard code.
+  - Endianness and alignment: cooked assets are little-endian, with explicit
+    versioning.
+  - Audio: miniaudio is already cross-platform.
+
+  ---
+
+  6. Revised milestone changes
+
+  ┌────────┬────────────────────────────────────────────────────────────────┐
+  │  When  │                             Change                             │
+  ├────────┼────────────────────────────────────────────────────────────────┤
+  │ M0     │ Platform interface + GLFW backend. CI builds on Windows and    │
+  │        │ Linux (GitHub Actions)                                         │
+  ├────────┼────────────────────────────────────────────────────────────────┤
+  │ M1     │ Vulkan bootstrap, but behind the rhi::Device interface from    │
+  │        │ the start                                                      │
+  ├────────┼────────────────────────────────────────────────────────────────┤
+  │ M2     │ Add the Null backend. Use Slang (or DXC) with the fixed        │
+  │        │ binding convention. Cooker outputs per-backend shader blobs    │
+  ├────────┼────────────────────────────────────────────────────────────────┤
+  │ M5     │ Render graph emits abstract ResourceState transitions only     │
+  ├────────┼────────────────────────────────────────────────────────────────┤
+  │ M5b    │ D3D12 backend. Same scenes, same shaders, pixel-diff test      │
+  │ (new)  │ against Vulkan. This is the milestone that proves the          │
+  │        │ abstraction; expect to refactor the RHI here                   │
+  ├────────┼────────────────────────────────────────────────────────────────┤
+  │        │ Metal (needs a Mac; Vulkan via MoltenVK works earlier as a     │
+  │ Later  │ stopgap), WebGPU (web), OpenGL (optional, reduced feature      │
+  │        │ tier), consoles (NDA SDKs, separate platform backends)         │
+  └────────┴────────────────────────────────────────────────────────────────┘
+
+  ---
+
+  7. Debugging a multi-backend renderer
+
+  - Golden-image tests: render fixed test scenes headless on every backend and
+    diff them against reference images with a small tolerance. This catches most
+    "works on Vulkan, broken on D3D12" bugs automatically.
+  - Use each API's native tool: RenderDoc (Vulkan, D3D12, GL), PIX (D3D12, with
+    the best GPU-crash and timing tools on Windows), Xcode GPU debugger (Metal),
+    Nsight (Vulkan, D3D12).
+  - Turn on every backend's validation: Vulkan validation + sync validation, the
+    D3D12 debug layer + GPU-based validation + DRED (crash breadcrumbs), Metal
+    API and shader validation, GL_KHR_debug.
+  - Common cross-backend bugs:
+    - Y-flipped or upside-down render targets, from inconsistent conventions
+      (fix in one place, per section 4).
+    - Different constant-buffer packing between HLSL cbuffers and std140. Use
+      explicit packing and static_assert struct layouts.
+    - Format support differences (e.g. some depth/stencil or BC formats are
+      missing on mobile). Gate them through caps().
+    - Barrier bugs hidden on Metal and GL, because those APIs synchronize for
+      you. Vulkan and D3D12 are the strict ones, so test on them often.
+    - Resources destroyed too early on one backend only: the
+      deferred-destruction logic must be identical in shape across backends.
+
+  ---
+
+  What to do now so this is cheap later
+
+  1. rhi/ interface with zero Vulkan types; Vulkan lives in rhi_vulkan/.
+  2. Null backend from day one.
+  3. One shader language with a fixed binding convention.
+  4. Engine-wide coordinate conventions in one header.
+  5. A platform interface with GLFW as one implementation, plus CI on two OSes
+     and two compilers.
+  6. A second real backend (D3D12) right after the render graph, not "someday."
+
+  I can set up the project skeleton with this layout (rhi/, rhi_vulkan/,
+  rhi_null/, platform/, platform_glfw/, CMake targets that enforce the include
+  boundaries) in d:\NotGame\Lmao if you want to start building.
+
+❯ i avoid using vkpkg, just clone the libs as submodules
+
+  Wrote 2 memories (ctrl+o to expand)
+
+● Got it. I'll drop vcpkg from the plan and treat third_party/ as git submodules
+  built from source through CMake. Here's how to set that up for this engine.
+
+  1. Layout
+
+  Lmao/
+    .gitmodules
+    CMakeLists.txt
+    cmake/                    CompilerWarnings.cmake, ThirdParty helpers
+    third_party/
+      CMakeLists.txt          ← the only file that knows about third-party build
+  quirks
+      glfw/  Vulkan-Headers/  volk/  VulkanMemoryAllocator/
+      D3D12MemoryAllocator/  DirectX-Headers/
+      glm/  imgui/  stb/  cgltf/  miniaudio/
+      lua/  sol2/  freetype/  harfbuzz/  msdfgen/
+      tracy/  SPIRV-Reflect/  recastnavigation/
+    tools/bin/                prebuilt shader compiler (not a submodule; see §4)
+    engine/ ...
+
+  2. Adding the submodules
+
+  d:\NotGame\Lmao isn't a git repository yet, so run git init first.
+
+  git init
+  git submodule add https://github.com/glfw/glfw.git
+       third_party/glfw
+  git submodule add https://github.com/KhronosGroup/Vulkan-Headers.git
+       third_party/Vulkan-Headers
+  git submodule add https://github.com/zeux/volk.git
+       third_party/volk
+  git submodule add
+  https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+  third_party/VulkanMemoryAllocator
+  git submodule add
+  https://github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator.git
+  third_party/D3D12MemoryAllocator
+  git submodule add https://github.com/microsoft/DirectX-Headers.git
+       third_party/DirectX-Headers
+  git submodule add https://github.com/g-truc/glm.git
+       third_party/glm
+  git submodule add -b docking https://github.com/ocornut/imgui.git
+       third_party/imgui
+  git submodule add https://github.com/nothings/stb.git
+       third_party/stb
+  git submodule add https://github.com/jkuhlmann/cgltf.git
+       third_party/cgltf
+  git submodule add https://github.com/mackron/miniaudio.git
+       third_party/miniaudio
+  git submodule add https://github.com/lua/lua.git
+       third_party/lua
+  git submodule add https://github.com/ThePhD/sol2.git
+       third_party/sol2
+  git submodule add https://github.com/freetype/freetype.git
+       third_party/freetype
+  git submodule add https://github.com/harfbuzz/harfbuzz.git
+       third_party/harfbuzz
+  git submodule add https://github.com/Chlumsky/msdfgen.git
+       third_party/msdfgen
+  git submodule add https://github.com/wolfpld/tracy.git
+       third_party/tracy
+  git submodule add https://github.com/KhronosGroup/SPIRV-Reflect.git
+       third_party/SPIRV-Reflect
+  git submodule add https://github.com/recastnavigation/recastnavigation.git
+       third_party/recastnavigation
+
+  Pin each one to a release tag, then commit the pointer:
+  git -C third_party/glfw checkout 3.4
+  git add third_party/glfw; git commit -m "Pin GLFW 3.4"
+
+  Practical rules:
+  - New clones need git clone --recursive, or git submodule update --init
+    --recursive afterwards.
+  - Make big repos shallow: git config -f .gitmodules
+    submodule.third_party/harfbuzz.shallow true.
+  - Never edit code inside a submodule. If you need a patch, fork the library
+    and point the submodule at your fork, or put the fix in your wrapper CMake.
+  - Upgrade deliberately, one library per commit, so git bisect can find a bad
+    upgrade.
+
+  I swapped fastgltf for cgltf because fastgltf downloads simdjson at configure
+  time by default, which defeats the point of submodules. If you'd rather keep
+  fastgltf, add simdjson as a submodule too and set FASTGLTF_DOWNLOAD_SIMDJSON
+  OFF.
+
+  3. third_party/CMakeLists.txt
+
+  All the build quirks live in this one file. Engine code just links
+  ThirdParty::glfw and the rest.
+
+  Three things to handle:
+  - Set each library's options before its add_subdirectory, so their tests,
+    examples and docs don't build.
+  - Use the SYSTEM keyword (CMake ≥ 3.25) so their warnings don't break your /W4
+    /WX build.
+  - Write small wrapper targets for libraries that have no CMake (imgui, stb,
+    lua, miniaudio).
+
+  # third_party/CMakeLists.txt
+  function(tp_folder)
+    foreach(t ${ARGN})
+      if(TARGET ${t})
+        set_target_properties(${t} PROPERTIES FOLDER "third_party")
+      endif()
+    endforeach()
+  endfunction()
+
+  # --- GLFW ---
+  set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
+  set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+  set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(GLFW_INSTALL        OFF CACHE BOOL "" FORCE)
+  add_subdirectory(glfw SYSTEM EXCLUDE_FROM_ALL)
+
+  # --- Vulkan (headers + volk loader: no Vulkan SDK needed to build) ---
+  add_subdirectory(Vulkan-Headers SYSTEM EXCLUDE_FROM_ALL)
+  if(WIN32)
+    set(VOLK_STATIC_DEFINES VK_USE_PLATFORM_WIN32_KHR CACHE STRING "" FORCE)
+  endif()
+  set(VOLK_PULL_IN_VULKAN OFF CACHE BOOL "" FORCE)
+  add_subdirectory(volk SYSTEM EXCLUDE_FROM_ALL)
+  target_link_libraries(volk PUBLIC Vulkan::Headers)
+
+  add_library(vma INTERFACE)
+  target_include_directories(vma SYSTEM INTERFACE VulkanMemoryAllocator/include)
+  target_link_libraries(vma INTERFACE Vulkan::Headers)
+  # VMA_IMPLEMENTATION goes in exactly ONE .cpp in rhi_vulkan, with
+  VMA_STATIC_VULKAN_FUNCTIONS=0
+  # and VMA_DYNAMIC_VULKAN_FUNCTIONS=1 (functions come from volk)
+
+  # --- D3D12 (Windows only) ---
+  if(WIN32)
+    add_subdirectory(DirectX-Headers SYSTEM EXCLUDE_FROM_ALL)
+    add_library(d3d12ma STATIC D3D12MemoryAllocator/src/D3D12MemAlloc.cpp)
+    target_include_directories(d3d12ma SYSTEM PUBLIC
+  D3D12MemoryAllocator/include)
+    target_link_libraries(d3d12ma PUBLIC Microsoft::DirectX-Headers d3d12 dxgi)
+    tp_folder(d3d12ma)
+  endif()
+
+  # --- Header-only ---
+  add_library(glm INTERFACE)
+  target_include_directories(glm SYSTEM INTERFACE glm)
+  target_compile_definitions(glm INTERFACE GLM_FORCE_DEPTH_ZERO_TO_ONE
+  GLM_FORCE_RADIANS)
+
+  add_library(stb INTERFACE)
+  target_include_directories(stb SYSTEM INTERFACE stb)
+
+  add_library(cgltf INTERFACE)
+  target_include_directories(cgltf SYSTEM INTERFACE cgltf)
+
+  # --- Dear ImGui (no CMake upstream) ---
+  add_library(imgui STATIC
+    imgui/imgui.cpp imgui/imgui_draw.cpp imgui/imgui_tables.cpp
+    imgui/imgui_widgets.cpp imgui/imgui_demo.cpp
+    imgui/backends/imgui_impl_glfw.cpp)
+  target_include_directories(imgui SYSTEM PUBLIC imgui imgui/backends)
+  target_link_libraries(imgui PUBLIC glfw)
+  # The renderer backend for ImGui goes through YOUR RHI, not
+  imgui_impl_vulkan.cpp
+
+  # --- miniaudio (implementation TU) ---
+  file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/miniaudio_impl.c
+       "#define MINIAUDIO_IMPLEMENTATION\n#include \"miniaudio.h\"\n")
+  add_library(miniaudio STATIC ${CMAKE_CURRENT_BINARY_DIR}/miniaudio_impl.c)
+  target_include_directories(miniaudio SYSTEM PUBLIC miniaudio)
+
+  # --- Lua (no CMake upstream) ---
+  file(GLOB LUA_SRC lua/*.c)
+  list(FILTER LUA_SRC EXCLUDE REGEX ".*/(lua|luac|onelua|ltests)\\.c$")
+  add_library(lua STATIC ${LUA_SRC})
+  target_include_directories(lua SYSTEM PUBLIC lua)
+  if(UNIX)
+    target_compile_definitions(lua PRIVATE LUA_USE_POSIX)
+  endif()
+
+  add_library(sol2 INTERFACE)
+  target_include_directories(sol2 SYSTEM INTERFACE sol2/include)
+  target_link_libraries(sol2 INTERFACE lua)
+
+  # --- FreeType + HarfBuzz ---
+  set(FT_DISABLE_ZLIB     ON CACHE BOOL "" FORCE)
+  set(FT_DISABLE_BZIP2    ON CACHE BOOL "" FORCE)
+  set(FT_DISABLE_PNG      ON CACHE BOOL "" FORCE)
+  set(FT_DISABLE_BROTLI   ON CACHE BOOL "" FORCE)
+  set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "" FORCE)  # avoid circular dep; HB
+  links FT, not vice versa
+  add_subdirectory(freetype SYSTEM EXCLUDE_FROM_ALL)
+
+  set(HB_HAVE_FREETYPE ON  CACHE BOOL "" FORCE)
+  set(HB_BUILD_SUBSET  OFF CACHE BOOL "" FORCE)
+  add_subdirectory(harfbuzz SYSTEM EXCLUDE_FROM_ALL)
+
+  # --- msdfgen ---
+  set(MSDFGEN_CORE_ONLY        OFF CACHE BOOL "" FORCE)
+  set(MSDFGEN_BUILD_STANDALONE OFF CACHE BOOL "" FORCE)
+  set(MSDFGEN_USE_VCPKG        OFF CACHE BOOL "" FORCE)
+  set(MSDFGEN_USE_SKIA         OFF CACHE BOOL "" FORCE)
+  set(MSDFGEN_DISABLE_SVG      ON  CACHE BOOL "" FORCE)
+  set(MSDFGEN_DISABLE_PNG      ON  CACHE BOOL "" FORCE)
+  add_subdirectory(msdfgen SYSTEM EXCLUDE_FROM_ALL)
+
+  # --- Tracy ---
+  option(ENGINE_PROFILING "Enable Tracy" ON)
+  set(TRACY_ENABLE ${ENGINE_PROFILING} CACHE BOOL "" FORCE)
+  set(TRACY_ON_DEMAND ON CACHE BOOL "" FORCE)
+  add_subdirectory(tracy SYSTEM EXCLUDE_FROM_ALL)
+
+  # --- SPIRV-Reflect (just compile the single source) ---
+  add_library(spirv_reflect STATIC SPIRV-Reflect/spirv_reflect.c)
+  target_include_directories(spirv_reflect SYSTEM PUBLIC SPIRV-Reflect)
+
+  # --- Recast/Detour ---
+  set(RECASTNAVIGATION_DEMO     OFF CACHE BOOL "" FORCE)
+  set(RECASTNAVIGATION_TESTS    OFF CACHE BOOL "" FORCE)
+  set(RECASTNAVIGATION_EXAMPLES OFF CACHE BOOL "" FORCE)
+  add_subdirectory(recastnavigation SYSTEM EXCLUDE_FROM_ALL)
+
+  tp_folder(glfw volk imgui miniaudio lua freetype harfbuzz msdfgen-core
+  msdfgen-ext
+            TracyClient spirv_reflect Recast Detour DetourCrowd DebugUtils)
+
+  Check option names when you pin a tag. Libraries rename CMake options between
+  releases (msdfgen and Recast especially). After bumping a submodule, grep its
+  CMakeLists.txt for option( to confirm the names above still exist.
+
+  The top-level CMakeLists.txt then only needs this:
+  cmake_minimum_required(VERSION 3.25)
+  project(Lmao LANGUAGES C CXX)
+  set(CMAKE_CXX_STANDARD 20)
+  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+  add_subdirectory(third_party)
+  add_subdirectory(engine)
+
+  4. What should not be a submodule
+
+  Item: Slang / DXC
+  Why: Building from source is enormous (DXC is an LLVM fork)
+  Do this instead: A scripts/setup.ps1 downloads a pinned prebuilt release into
+  tools/bin/ (gitignored). Ship the runtime DLL for hot reload
+  ────────────────────────────────────────
+  Item: Vulkan validation layers
+  Why: Large build with its own dependencies; only needed at dev time
+  Do this instead: Install the Vulkan SDK for the layers, vkconfig and RenderDoc
+
+  integration. Thanks to Vulkan-Headers + volk, the engine build doesn't depend
+   on the SDK
+  ────────────────────────────────────────
+  Item: D3D12 Agility SDK
+  Why: Distributed only as a NuGet package
+  Do this instead: Use the Windows SDK's d3d12.h at first; add the Agility SDK
+  through the setup script later if you need newer features
+
+  5. Keeping build times sane
+
+  You now compile everything from source, and HarfBuzz and FreeType alone take a
+  while.
+  - Use Ninja with MSVC or clang-cl, not the Visual Studio generator. It's much
+    faster for incremental builds.
+  - Use sccache or ccache (CMAKE_C_COMPILER_LAUNCHER /
+    CMAKE_CXX_COMPILER_LAUNCHER) so a clean rebuild doesn't recompile
+    third-party code.
+  - EXCLUDE_FROM_ALL means only the libraries you actually link get built.
+  - Put presets in CMakePresets.json (windows-debug, windows-release,
+    linux-debug) so CI and your machine build the same way.
+
+  6. Licenses
+
+  Everything listed is permissive (MIT, BSD, zlib, Apache 2.0, or public
+  domain), with one exception: FreeType is dual-licensed FTL/GPLv2, so choose
+  FTL, which requires a credit line in your docs or credits. Keep a
+  third_party/LICENSES.md listing each library and its license.
+
+  I saved "dependencies are git submodules, no vcpkg" to memory for this
+  project, so future suggestions will follow it. If you'd like, I can run the
+  git init and submodule commands and write these CMake files into
+  d:\NotGame\Lmao now.
+
+❯ the given architecture and file structure are inspired from what?
+
+● No single engine is behind it. The plan combines patterns that have become
+  standard in published engine work: books, GDC talks, open-source engines and a
+  few well-known blogs. Below is where each part comes from, so you can read
+  the originals.
+
+  Overall architecture
+
+  Part of the plan: Layered runtime (Core → RHI → Resources/Scene → Systems →
+  Gameplay → Tools), lower layers never depend on higher ones
+  Main influence: Jason Gregory, Game Engine Architecture (the Naughty Dog lead
+  programmer's book). Its "runtime engine architecture" diagram is the closest
+  single source.
+  ────────────────────────────────────────
+  Part of the plan: One folder or module per subsystem, backends as separate
+  modules
+  Main influence: Unreal Engine's Engine/Source/Runtime/ layout, with separate
+  RHI, VulkanRHI, D3D12RHI and NullDrv modules
+  ────────────────────────────────────────
+  Part of the plan: Platform interface with per-OS implementations
+  (platform_win32, platform_posix)
+  Main influence: Unreal's GenericPlatform + per-platform HAL pattern
+
+  Core systems
+
+  ┌────────────────────────────┬─────────────────────────────────────────────┐
+  │            Part            │                  Influence                  │
+  ├────────────────────────────┼─────────────────────────────────────────────┤
+  │ Generational handles       │ Andre Weissflog (floooh, author of sokol),  │
+  │ instead of pointers        │ "Handles are the better pointers";          │
+  │                            │ Bitsquid/Stingray blog posts by Niklas Gray │
+  ├────────────────────────────┼─────────────────────────────────────────────┤
+  │ Data-oriented ECS, sparse  │ EnTT (sparse set), flecs (archetypes),      │
+  │ sets, transform hierarchy  │ Bitsquid's "Building a Data-Oriented Entity │
+  │ as components              │  System", Overwatch GDC 2017 (Timothy Ford) │
+  ├────────────────────────────┼─────────────────────────────────────────────┤
+  │ Job system with counters,  │ Christian Gyrling, "Parallelizing the       │
+  │ fibers as a later option   │ Naughty Dog Engine Using Fibers" (GDC 2015) │
+  ├────────────────────────────┼─────────────────────────────────────────────┤
+  │ Simulation one frame ahead │ Destiny's multithreaded rendering           │
+  │  of rendering, with a      │ architecture (Natalya Tatarchuk, GDC 2015)  │
+  │ render extract step        │                                             │
+  ├────────────────────────────┼─────────────────────────────────────────────┤
+  │ Fixed timestep with        │ Glenn Fiedler, "Fix Your Timestep!" (Gaffer │
+  │ interpolation              │  On Games)                                  │
+  ├────────────────────────────┼─────────────────────────────────────────────┤
+  │ Frame / pool / TLSF        │ General console-dev practice; TLSF comes    │
+  │ allocators                 │ from the Masmano et al. paper               │
+  └────────────────────────────┴─────────────────────────────────────────────┘
+
+  Rendering / RHI
+
+  ┌──────────────────────────────┬──────────────────────────────────────────┐
+  │             Part             │                Influence                 │
+  ├──────────────────────────────┼──────────────────────────────────────────┤
+  │ Render graph with automatic  │ Yuriy O'Donnell, "FrameGraph"            │
+  │ barriers and transient       │ (Frostbite, GDC 2017); Hans-Kristian     │
+  │ aliasing                     │ Arntzen's Granite blog, "Render graphs   │
+  │                              │ and Vulkan — a deep dive"                │
+  ├──────────────────────────────┼──────────────────────────────────────────┤
+  │ Modern explicit RHI,         │ Unreal RHI, NVIDIA NVRHI, The Forge,     │
+  │ handle-based, coarse virtual │ Diligent Engine, bgfx, sokol_gfx         │
+  │  interface, Null backend     │                                          │
+  ├──────────────────────────────┼──────────────────────────────────────────┤
+  │ Vulkan 1.3 baseline: dynamic │ Arseny Kapoulkine, "Writing an efficient │
+  │  rendering, bindless, buffer │  Vulkan renderer"; vkguide.dev; Sascha   │
+  │  device address, timeline    │ Willems' samples; Khronos samples        │
+  │ semaphores                   │                                          │
+  ├──────────────────────────────┼──────────────────────────────────────────┤
+  │ Reverse-Z                    │ Nathan Reed, "Depth Precision            │
+  │                              │ Visualized"                              │
+  ├──────────────────────────────┼──────────────────────────────────────────┤
+  │ One shader source for many   │ Slang, from NVIDIA research, now hosted  │
+  │ targets, fixed binding       │ by Khronos; Unreal's shader              │
+  │ convention                   │ cross-compilation pipeline               │
+  └──────────────────────────────┴──────────────────────────────────────────┘
+
+  Gameplay systems
+
+  ┌───────────────────────────┬─────────────────────────────────────────────┐
+  │           Part            │                  Influence                  │
+  ├───────────────────────────┼─────────────────────────────────────────────┤
+  │ Sequential-impulse        │ Erin Catto's GDC talks and Box2D; Dirk      │
+  │ solver, warm starting,    │ Gregorius's GDC talks on collision          │
+  │ GJK/SAT                   │                                             │
+  ├───────────────────────────┼─────────────────────────────────────────────┤
+  │ Client-server, snapshots, │ Gaffer On Games networking series; Valve's  │
+  │  prediction,              │ "Source Multiplayer Networking"; Gabriel    │
+  │ reconciliation            │ Gambetta's client-side prediction articles; │
+  │                           │  Overwatch netcode GDC talk                 │
+  ├───────────────────────────┼─────────────────────────────────────────────┤
+  │ Behavior trees +          │ Damian Isla, "Handling Complexity in the    │
+  │ blackboard                │ Halo 2 AI" (GDC 2005)                       │
+  ├───────────────────────────┼─────────────────────────────────────────────┤
+  │ Navmesh                   │ Mikko Mononen's Recast/Detour               │
+  ├───────────────────────────┼─────────────────────────────────────────────┤
+  │ Animation (blend trees,   │                                             │
+  │ state machines,           │ Unreal's animation system; ozz-animation    │
+  │ compressed clips)         │                                             │
+  ├───────────────────────────┼─────────────────────────────────────────────┤
+  │ Cinematics timeline with  │ Unreal Sequencer, Unity Timeline            │
+  │ tracks                    │                                             │
+  ├───────────────────────────┼─────────────────────────────────────────────┤
+  │ Localization (string      │ Standard industry practice;                 │
+  │ tables, HarfBuzz shaping, │ pseudo-localization is a long-standing      │
+  │  pseudo-locale)           │ Microsoft practice                          │
+  └───────────────────────────┴─────────────────────────────────────────────┘
+
+  What's my own judgment rather than borrowed
+
+  - The milestone order and time estimates: putting reflection early, networking
+    late, and a D3D12 backend right after the render graph.
+  - Specific trade-offs for your situation: one person, Vulkan first,
+    submodules, recommending against OpenGL in favor of WebGPU.
+  - Simplifications of the sources: a sparse-set ECS instead of archetypes, no
+    fibers at first, no aliasing in the first render graph. The original talks
+    describe AAA-scale versions; these are scaled down for a solo developer.
+
+  Suggested reading order
+
+  1. Game Engine Architecture, Jason Gregory: the big picture.
+  2. Gaffer On Games: timestep and networking.
+  3. vkguide.dev, then Kapoulkine's renderer article: Vulkan.
+  4. Frostbite FrameGraph talk: before milestone M5.
+  5. Naughty Dog fiber talk: before the job system (M3).
+  6. Erin Catto's GDC slides: before physics (M7).
+  7. Source code to browse: NVRHI and The Forge for the RHI, EnTT for the ECS,
+     Box2D v3 for physics.
+
+❯ what is the Claude's Skills needed for this kind of project?
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Updated plan
+  ⎿  /plan to preview
+
+● User approved Claude's plan
+  ⎿  Plan saved to:
+     C:\Users\phap\.claude\plans\what-is-the-claude-s-drifting-kahn.md · /plan
+     to edit
+     Claude Skills for the Lmao Game Engine
+
+     Context
+
+     The user is starting a C++20 / Vulkan / GLFW game engine in d:\NotGame\Lmao
+     (currently empty, not yet a git repo).
+     Plan so far: layered architecture, RHI-agnostic (Vulkan first, D3D12 next,
+     Null backend), platform layer with GLFW as one backend,
+     third-party libs as git submodules (no vcpkg), CMake + Ninja, Slang
+     shaders, milestones M0–M15.
+     They asked which Claude Skills this kind of project needs. Answer: a few
+     built-in skills are useful as-is; the real value comes
+     from a handful of project skills in .claude/skills/ that encode this
+     engine's repeatable workflows, plus CLAUDE.md and hooks.
+
+     Part A — Built-in skills worth using (no work needed)
+
+     ┌──────────────────────────┬───────────────────────────────────────────────
+     ┐
+     │          Skill           │              Use in this project
+     │
+     ├──────────────────────────┼───────────────────────────────────────────────
+     ┤
+     │ init                     │ Generate CLAUDE.md once the M0 skeleton
+     │
+     │                          │ exists (then hand-edit conventions in)
+     │
+     ├──────────────────────────┼───────────────────────────────────────────────
+     ┤
+     │ code-review              │ Review each milestone branch; high for
+     │
+     │                          │ RHI/sync/job-system changes
+     │
+     ├──────────────────────────┼───────────────────────────────────────────────
+     ┤
+     │ simplify                 │ Cleanup pass after a subsystem lands
+     │
+     ├──────────────────────────┼───────────────────────────────────────────────
+     ┤
+     │ run                      │ Launch the engine/sample to confirm a change
+     │
+     │                          │ works
+     │
+     ├──────────────────────────┼───────────────────────────────────────────────
+     ┤
+     │ update-config            │ Add hooks (e.g. build-after-edit) and Bash
+     │
+     │                          │ permissions for cmake/ninja/git
+     │
+     ├──────────────────────────┼───────────────────────────────────────────────
+     ┤
+     │ fewer-permission-prompts │ After a few sessions, allowlist the read-only
+     │
+     │                          │  build/query commands
+     │
+     ├──────────────────────────┼───────────────────────────────────────────────
+     ┤
+     │ loop                     │ Babysit long builds / CI runs
+     │
+     └──────────────────────────┴───────────────────────────────────────────────
+     ┘
+
+     Not relevant: docx/pptx/xlsx/pdf, morning, browser/computer-use, claude-api
+     (unless adding LLM-driven NPC AI later).
+
+     Part B — Project skills to create (.claude/skills/<name>/SKILL.md)
+
+     Each = frontmatter (name, description that says when to trigger) + concise
+     steps + optional helper scripts in the same folder.
+
+     Skill: engine-build
+     Triggers on: build, compile, configure, link errors
+     What it encodes: CMake preset names, Ninja, sccache, where logs land, how
+     to
+     read MSVC/clang-cl errors, never touch third_party/ sources
+     ────────────────────────────────────────
+     Skill: add-dependency
+     Triggers on: add/upgrade a library
+     What it encodes: git submodule add + pin tag + shallow flag, wrapper target
+     in
+     third_party/CMakeLists.txt (options before add_subdirectory, SYSTEM,
+     EXCLUDE_FROM_ALL, FOLDER), verify option names, update
+     third_party/LICENSES.md. Never vcpkg/FetchContent
+     ────────────────────────────────────────
+     Skill: new-subsystem
+     Triggers on: create module/subsystem
+     What it encodes: Folder + CMake target template, layering rule (lower
+     layers
+     never include higher), handle types, ENGINE_API macros, test target,
+     registration in app loop
+     ────────────────────────────────────────
+     Skill: rhi-backend
+     Triggers on: touching rhi/ or a backend
+     What it encodes: Rules: no backend headers in public RHI, desc structs,
+     abstract enums + translation tables, caps gating, deferred destruction;
+     checklist to implement a new Device/CommandList method across
+     Vulkan/D3D12/Null
+     ────────────────────────────────────────
+     Skill: shader-workflow
+     Triggers on: add/modify shaders
+     What it encodes: Slang compile commands (from tools/bin), binding
+     convention
+     (push constants / bindless set0 / per-frame set1), reflection, per-backend
+     blob cooking, hot reload
+     ────────────────────────────────────────
+     Skill: vulkan-debug
+     Triggers on: validation error, DEVICE_LOST, flicker, black screen
+     What it encodes: Enable validation + sync validation via vkconfig/env vars,
+
+     read messenger output, symptom→cause table from the plan, RenderDoc capture
+
+     steps, breadcrumb readback, Aftermath/DRED
+     ────────────────────────────────────────
+     Skill: render-graph-pass
+     Triggers on: add render pass
+     What it encodes: Pass declaration template (reads/writes, ResourceState),
+     naming + debug markers, golden-image test registration
+     ────────────────────────────────────────
+     Skill: perf-profile
+     Triggers on: slow, hitch, profile
+     What it encodes: Tracy build flag, zone macros, how to capture/compare,
+     frame-budget targets
+     ────────────────────────────────────────
+     Skill: golden-image-test
+     Triggers on: rendering regression, cross-backend diff
+     What it encodes: Headless render of test scenes per backend, image diff
+     tolerance, updating references deliberately
+     ────────────────────────────────────────
+     Skill: milestone
+     Triggers on: "start M5", "what's next"
+     What it encodes: Milestone table + exit criteria; each milestone ends with
+     a
+     demo and a code-review pass
+
+     Keep each SKILL.md short (steps + rules); put long tables (Vulkan symptom
+     table, milestone table) in a reference.md next to it.
+
+     Part C — Supporting files (not skills, but needed)
+
+     - CLAUDE.md (repo root): coordinate conventions (reverse-Z, 0..1 depth,
+       right-handed, column-major), naming, layering rules, "deps are
+       submodules", build commands, "no Vulkan types outside rhi_vulkan".
+     - .claude/settings.json hooks: optional PostToolUse build-check on .cpp/.h
+       edits (via update-config).
+     - Existing memory deps-git-submodules already records the no-vcpkg rule.
+
+     Recommended order
+
+     1. M0 skeleton exists → run init, edit CLAUDE.md.
+     2. Create engine-build + add-dependency (needed immediately).
+     3. M1–M2: vulkan-debug, shader-workflow, rhi-backend.
+     4. M3+: new-subsystem, perf-profile. M5: render-graph-pass,
+        golden-image-test. milestone any time.
+        Write skills from real sessions: when a workflow is repeated twice,
+        capture it — don't pre-write all ten speculatively.
+
+     Files to create (when executing)
+
+     - d:\NotGame\Lmao\.claude\skills\engine-build\SKILL.md
+     - d:\NotGame\Lmao\.claude\skills\add-dependency\SKILL.md
+     - d:\NotGame\Lmao\.claude\skills\vulkan-debug\SKILL.md + reference.md
+     - (others per order above), d:\NotGame\Lmao\CLAUDE.md
+
+     Verification
+
+     - / menu in Claude Code lists the new skills; descriptions trigger
+       correctly (e.g. asking "add the Jolt library" loads add-dependency).
+     - Dry-run each skill on a real task: add-dependency adds a submodule and
+       the CMake target configures; engine-build produces a clean build;
+       vulkan-debug steps surface a deliberately injected missing barrier via
+       sync validation.
+
+● The plan is approved. I'll create the three skills needed first, plus
+  CLAUDE.md.
+
+● Write(CLAUDE.md)
+  ⎿  Wrote 24 lines to CLAUDE.md
+       1 # Lmao Engine
+       3 C++20 game engine. Vulkan first (D3D12, Metal, WebGPU later), GL
+       4
+       5 ## Layering (lower never includes higher)
+         s`, `audio`, `anim`, `net`, `loc`) → gameplay (`script`, `ai`, `
+       7
+       9 - **Dependencies are git submodules in `third_party/`.** No vcpk
+         g, Conan or FetchContent. Never edit files inside a submodule. U
+      10 - **No backend types outside their backend.** `vulkan.h` only in
+         ks to `rhi::Device` / `rhi::CommandList` only.
+     … +28 lines (ctrl+o to expand)
+
+● Write(.claude\skills\engine-build\SKILL.md)
+  ⎿  Wrote 30 lines to .claude\skills\engine-build\SKILL.md
+      1 ---
+      2 name: engine-build
+        ngine. Use when asked to build, compile, configure CMake, or when
+         there are compiler or linker errors.
+      4 ---
+      6 # Building the engine
+      7
+      8 ## Commands
+        lease`, `linux-debug`). If the file doesn't exist yet, create it
+        before inventing ad-hoc flags.
+     … +41 lines (ctrl+o to expand)
+
+● Write(.claude\skills\add-dependency\SKILL.md)
+  ⎿  Wrote 42 lines to .claude\skills\add-dependency\SKILL.md
+       1 ---
+       2 name: add-dependency
+          the Lmao engine as a git submodule. Use when asked to add, pull
+          in, upgrade, pin or remove a library or dependency.
+       4 ---
+       6 # Adding a dependency (git submodules only)
+       7
+       8 Never use vcpkg, Conan or CMake FetchContent. Never edit files i
+       9
+      10 ## Add
+     … +51 lines (ctrl+o to expand)
+
+● Write(.claude\skills\vulkan-debug\SKILL.md)
+  ⎿  Wrote 39 lines to .claude\skills\vulkan-debug\SKILL.md
+       1 ---
+       3 description: Diagnose Vulkan rendering bugs in the Lmao engine.
+         Use for validation-layer errors, VK_ERROR_DEVICE_LOST, GPU crash
+         es or hangs, flickering, corruption, black screens, swapchain/re
+       4 ---
+       5
+       7
+       8 ## 1. Get information before changing code
+       9 - Run a **Debug** build with validation on. Turn on sync validat
+      10   ```powershell
+     … +52 lines (ctrl+o to expand)
+
+● Write(.claude\skills\vulkan-debug\reference.md)
+  ⎿  Wrote 15 lines to .claude\skills\vulkan-debug\reference.md
+      1 # Vulkan symptom → cause table
+      3 | Symptom | Likely cause | Where to look |
+      4 |---|---|---|
+        ight; OOB shader access; infinite loop | Deletion queue timeline
+        values; GPU-AV; breadcrumbs; Aftermath / RGD |
+        (stage or access mask) | Sync validation; render graph pass decla
+        rations |
+        IA ignores many); missing `nonuniformEXT`; alignment assumptions
+        | Validation; `minUniformBufferOffsetAlignment`, `minStorageBuffe
+      8 | Garbage uniform/storage values | `
+     … +27 lines (ctrl+o to expand)
+
+● This project needs a few of Claude's built-in skills, but most of the value
+  comes from project skills that teach me this engine's own rules. I've written
+  the first three of those plus a CLAUDE.md. I haven't tested them yet: they'll
+  show up in the / menu in your next Claude Code session, and some commands
+  point at files that don't exist yet.
+
+  Built-in skills you can already use
+
+  ┌──────────────────────────┬───────────────────────────────────────────────┐
+  │          Skill           │              What it's for here               │
+  ├──────────────────────────┼───────────────────────────────────────────────┤
+  │ code-review              │ Review each milestone's changes; use high for │
+  │                          │  the RHI, synchronization and the job system  │
+  ├──────────────────────────┼───────────────────────────────────────────────┤
+  │ simplify                 │ A cleanup pass after a subsystem is finished  │
+  ├──────────────────────────┼───────────────────────────────────────────────┤
+  │ run                      │ Start the engine or a sample to check that a  │
+  │                          │ change actually works                         │
+  ├──────────────────────────┼───────────────────────────────────────────────┤
+  │ update-config            │ Add hooks (for example, build after each      │
+  │                          │ edit) and allow cmake/ninja/git commands      │
+  ├──────────────────────────┼───────────────────────────────────────────────┤
+  │ fewer-permission-prompts │ After a few sessions, stop the repeated       │
+  │                          │ permission prompts for build commands         │
+  ├──────────────────────────┼───────────────────────────────────────────────┤
+  │ loop                     │ Keep checking a long build or CI run          │
+  ├──────────────────────────┼───────────────────────────────────────────────┤
+  │ init                     │ Can regenerate CLAUDE.md once real code       │
+  │                          │ exists                                        │
+  └──────────────────────────┴───────────────────────────────────────────────┘
+
+  The document, spreadsheet, slide, PDF and browser skills don't help with this
+  project. claude-api only matters if you later want LLM-driven NPCs.
+
+  Project skills created now
+
+  - CLAUDE.md: the engine's ground rules (layering, no vcpkg, no Vulkan types
+    outside rhi_vulkan/, handles, coordinate and shader conventions). Claude
+    reads it at the start of every session.
+  - engine-build: how to configure and build with CMake presets and Ninja, and
+    what usually causes build errors (single-header implementation macros, volk
+    instead of vulkan-1.lib, layering mistakes).
+    - It points at CMakePresets.json, which doesn't exist yet. The skill says to
+      create it before building.
+  - add-dependency: the submodule workflow. It covers the license check, pinning
+    a tag, writing the wrapper target in third_party/CMakeLists.txt, checking
+    that option names still exist, and how to upgrade or remove a library.
+  - vulkan-debug with a reference table of symptoms and causes: turning on
+    validation and sync validation, steps to narrow down a bug, what to do after
+    DEVICE_LOST, and the order to check things in RenderDoc.
+    - The validation environment-variable names change between Vulkan SDK
+      versions, so the skill says to check vkconfig if one has no effect.
+
+  Skills to add later, when you reach those milestones
+
+  - M1–M2: shader-workflow (Slang commands, binding convention, hot reload) and
+    rhi-backend (checklist for adding an RHI method to every backend).
+  - M3+: new-subsystem (module template and layering rules) and perf-profile
+    (using Tracy).
+  - M5: render-graph-pass and golden-image-test.
+  - Any time: milestone (milestone table and exit criteria).
+
+  It's better to write these from real sessions than all at once up front. When
+  a workflow has come up twice, that's the time to turn it into a skill.
+
+❯ <ide_opened_file>The user opened the file
+  d:\NotGame\Lmao\.claude\skills\add-dependency\SKILL.md in the IDE. This may
+  or may not be related to the current task.</ide_opened_file>
+
+❯ how can i track the milestone
+
+● Since you're working solo, I'd keep the tracker as a Markdown file in the
+  repo, mark each finished milestone with a git tag, and add GitHub Milestones
+  later only if you want them.
+
+  1. Source of truth: docs/milestones.md
+
+  The file lives next to the code, so it's versioned with it, it shows in diffs,
+  and I can read and update it as part of the work.
+
+  # Milestones
+
+  | # | Name | Status | Started | Done | Tag |
+  |---|------|--------|---------|------|-----|
+  | M0 | Foundation | ✅ Done | 2026-10-21 | 2026-11-08 | m0 |
+  | M1 | Vulkan bootstrap | 🚧 In progress | 2026-11-09 | | |
+  | M2 | Render core | ⏳ Planned | | | |
+
+  ---
+
+  ## M1 — Vulkan bootstrap 🚧
+
+  **Exit criteria** (the milestone is done only when all of these are checked)
+  - [x] Instance + debug messenger, validation breaks into the debugger on
+  errors
+  - [x] Device selection (Vulkan 1.3 features required)
+  - [ ] Swapchain + 2 frames in flight, one render-finished semaphore per image
+  - [ ] Triangle rendered through `rhi::Device` (no Vulkan types outside
+  `rhi_vulkan/`)
+  - [ ] Survives resize and minimize with **zero** validation or sync-validation
+  messages
+
+  **Tasks**
+  - [x] volk + VMA wired in
+  - [ ] Deletion queue keyed on timeline semaphore
+  - [ ] RenderDoc in-app capture hotkey
+
+  **Notes / decisions**
+  - 2026-11-12: chose FIFO by default, MAILBOX when available.
+
+  **Demo:** `docs/demos/m1.gif`
+
+  Rules that keep it honest:
+  - Exit criteria are fixed when the milestone starts. Tasks can change; the
+    criteria can't.
+  - Done means demo-able. Each milestone gets a short GIF or screenshot, or a
+    sample that runs.
+  - When a milestone closes, tag the commit (git tag -a m1 -m "M1: Vulkan
+    bootstrap") and move to the next one. A tag lets you check out "the engine
+    as of M1" later.
+  - Record decisions in the Notes section, or in docs/decisions/ for bigger
+    ones.
+
+  2. Day-to-day: GitHub Issues + Milestones (optional, once you push to GitHub)
+
+  Turn each exit criterion into an issue, group the issues under a GitHub
+  Milestone, and close them from commits (Fixes #12). You get a progress bar and
+  history for free, and I can manage them with the gh CLI. Keep
+  docs/milestones.md as the summary, so the plan still lives in the repo.
+
+  3. Make it part of the workflow
+
+  Add the milestone skill from the earlier plan. When you say "what's next" or
+  "close M1", it would:
+  - read docs/milestones.md,
+  - check the current milestone's exit criteria against the code (for example,
+    build and run with validation to confirm zero messages),
+  - run code-review on the milestone's changes,
+  - tag the commit and update the table.
+
+  If you'd rather see progress at a glance, I can also publish a small tracker
+  page with progress bars per milestone. It would be a second copy of the plan
+  to keep in sync, though, so I'd only add it if the Markdown file isn't enough.
+
+  Do you want me to create docs/milestones.md with all of M0–M15 and their exit
+  criteria, plus the milestone skill?
+
+❯ add suitable .gitignore
+  ⎿  3 skills available
+
+● Write(.gitignore)
+  ⎿  Wrote 82 lines to .gitignore
+       1 # ---- Build output ----
+       2 build/
+       3 out/
+       4 bin/
+       5 lib/
+       6 [Dd]ebug/
+       7 [Rr]elease/
+       8 RelWithDebInfo/
+       9 MinSizeRel/
+      10 CMakeUserPresets.json
+     … +73 lines (ctrl+o to expand)
+
+● Update(.gitignore)
+  ⎿  Added 9 lines, removed 8 lines
+       1  # ---- Build output ----
+       2 -build/                                                         
+       3 -out/                                                           
+       4 -bin/                                                           
+       5 -lib/                                                           
+       6 -[Dd]ebug/                                                      
+       7 -[Rr]elease/                                                    
+       8 -RelWithDebInfo/                                                
+       9 -MinSizeRel/                                                    
+       2 +# Anchored to the repo root so source folders like engine/core/
+         +debug/ aren't ignored                                          
+       3 +/build/                                                        
+       4 +/out/                                                          
+       5 +/bin/                                                          
+       6 +/lib/                                                          
+       7 +/[Dd]ebug/                                                     
+       8 +/[Rr]elease/                                                   
+       9 +/RelWithDebInfo/                                               
+      10 +/MinSizeRel/                                                   
+      11  CMakeUserPresets.json
+      12  CMakeCache.txt
+      13  CMakeFiles/
+
+● I added a .gitignore at the repo root. The folder isn't a git repository yet,
+  so it takes effect once you run git init.
+
+  What it ignores:
+  - Build output: build/, out/, CMakeUserPresets.json, compile_commands.json,
+    and compiled objects and binaries (.obj, .lib, .dll, .exe, .pdb, …).
+  - Prebuilt tools: tools/bin/, where the setup script will put the shader
+    compiler.
+  - Generated engine data: compiled shaders (.spv, .dxil, .metallib), cooked/,
+    the pipeline cache and imgui.ini.
+  - Debug and profiling captures: RenderDoc .rdc, Tracy .tracy, crash dumps
+    .dmp, PIX/Nsight captures, and logs.
+  - IDE and OS files: Visual Studio, CLion, .DS_Store and similar. Shared
+    .vscode/ files (settings, tasks, launch, extensions) are still tracked.
+  - Personal Claude settings: .claude/settings.local.json. The skills and the
+    shared .claude/settings.json are still tracked.
+
+  Choices to know about:
+  - Build folders like /build/ and /Debug/ only match at the repo root.
+    Otherwise a source folder such as engine/core/debug/ would be silently
+    ignored.
+  - third_party/ is not ignored, since submodules must be committed. Rules in
+    this file don't affect what's inside the submodules anyway.
+  - CMakePresets.json is tracked (shared presets); only CMakeUserPresets.json
+    (personal overrides) is ignored.
+❯ check docs/milestones.md file
+
+  Searched for 1 pattern, read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● The file is my example template from earlier, copied word for word, and it
+  doesn't match the repo. It says work has been done that hasn't happened yet.
+
+  The repo has one commit (471996d Initial commit) on branch dev, no tags, and
+  no source code. Only CLAUDE.md, the skills, .gitignore and this file exist.
+
+  Problems
+
+  ┌───────┬──────────────────────────┬──────────────────────────────────────┐
+  │ Line  │       What it says       │         What's actually true         │
+  ├───────┼──────────────────────────┼──────────────────────────────────────┤
+  │       │                          │ No m0 tag; no CMake, platform layer  │
+  │ 5     │ M0 ✅ Done on            │ or logging exists. The done date is  │
+  │       │ 2026-11-08, tag m0       │ also in the future (today is         │
+  │       │                          │ 2026-10-21).                         │
+  ├───────┼──────────────────────────┼──────────────────────────────────────┤
+  │ 6     │ M1 🚧 started 2026-11-09 │ Hasn't started, and the date is in   │
+  │       │                          │ the future                           │
+  ├───────┼──────────────────────────┼──────────────────────────────────────┤
+  │ 14-15 │ Instance/messenger and   │ No Vulkan code exists                │
+  │       │ device selection checked │                                      │
+  ├───────┼──────────────────────────┼──────────────────────────────────────┤
+  │ 21    │ volk + VMA wired in      │ No third_party/ submodules yet       │
+  ├───────┼──────────────────────────┼──────────────────────────────────────┤
+  │ 26    │ Decision dated           │ Made-up example entry with a future  │
+  │       │ 2026-11-12               │ date                                 │
+  ├───────┼──────────────────────────┼──────────────────────────────────────┤
+  │ 3-7   │ Only M0–M2 listed        │ The plan has M0–M15, plus M5b for    │
+  │       │                          │ the D3D12 backend                    │
+  ├───────┼──────────────────────────┼──────────────────────────────────────┤
+  │ 11    │ Detailed section is for  │ It should be for M0, which is the    │
+  │       │ M1                       │ real current milestone               │
+  └───────┴──────────────────────────┴──────────────────────────────────────┘
+
+  The format is fine. Only the content needs fixing.
+
+  Proposed fix
+
+  1. Reset the status table to reality: M0 🚧 In progress, started 2026-10-21,
+     and everything else ⏳ Planned with no dates or tags.
+  2. List all milestones: M0–M15 plus M5b.
+  3. Replace the M1 section with a real M0 section, with exit criteria from the
+     plan: CMake + presets, logging/asserts, crash dumps, GLFW window and input
+     behind the platform interface, timer, math, Tracy connects, and CI building
+     on Windows and Linux. Mark as done what already exists: the repo,
+     CLAUDE.md, .gitignore, the skills.
+  4. Remove the made-up note and demo path.
+  5. Optionally, add exit criteria for every milestone now, so they're fixed
+     before each one starts.
+
+  Should I apply this? If so, do you want exit criteria for all milestones now,
+  or just M0?
+
+❯ <ide_opened_file>The user opened the file d:\NotGame\Lmao\docs\milestones.md
+  in the IDE. This may or may not be related to the current
+  task.</ide_opened_file>
+
+❯ apply those fixes
+
+● Write(docs\milestones.md)
+  ⎿  Error writing file
+
+● The file changed after I read it, so I'll check the new contents before
+  overwriting anything.
+
+  Read 1 file (ctrl+o to expand)
+
+● I'll keep your M0/M1 updates in place and also fix the invalid m0 tag and the
+  - [] checkboxes, which need a space to render properly.
+
+● Write(docs\milestones.md)
+  ⎿  Added 129 lines, removed 14 lines
+        2  
+        3  | # | Name | Status | Started | Done | Tag |
+        4  |---|------|--------|---------|------|-----|
+        5 -| M0 | Foundation | 🚧 In progress | 2026-10-21 | | m0 |      
+        6 -| M1 | Vulkan bootstrap | 🚧 In progress | 2026-11-09 | | |   
+        5 +| M0 | Foundation | 🚧 In progress | 2026-10-21 | | |         
+        6 +| M1 | Vulkan bootstrap | ⏳ Planned | | | |                  
+        7  | M2 | Render core | ⏳ Planned | | | |
+        8 +| M3 | Memory + jobs | ⏳ Planned | | | |                     
+        9 +| M4 | Scene + assets | ⏳ Planned | | | |                    
+       10 +| M5 | Render graph + lighting | ⏳ Planned | | | |           
+       11 +| M5b | D3D12 backend | ⏳ Planned | | | |                    
+       12 +| M6 | 2D + text + localization | ⏳ Planned | | | |          
+       13 +| M7 | Physics | ⏳ Planned | | | |                           
+       14 +| M8 | Audio | ⏳ Planned | | | |                             
+       15 +| M9 | Animation | ⏳ Planned | | | |                         
+       16 +| M10 | Scripting | ⏳ Planned | | | |                        
+       17 +| M11 | AI | ⏳ Planned | | | |                               
+       18 +| M12 | Streaming | ⏳ Planned | | | |                        
+       19 +| M13 | Networking | ⏳ Planned | | | |                       
+       20 +| M14 | Cinematics | ⏳ Planned | | | |                       
+       21 +| M15 | Editor | ⏳ Planned | | | |                           
+       22  
+       23 +Rules:                                                        
+       24 +- Exit criteria are fixed when a milestone starts. Tasks can c
+          +hange; criteria can't.                                        
+       25 +- Done means demo-able: each milestone gets a GIF, screenshot 
+          +or runnable sample in `docs/demos/`.                          
+       26 +- When a milestone closes, tag the commit (`git tag -a m<N> -m
+          + "M<N>: <name>"`) and fill in the table.                      
+       27 +                                                              
+       28  ---
+       29  
+       11 -## M1 — Vulkan bootstrap 🚧                                   
+       30 +## M0 — Foundation 🚧                                         
+       31  
+       13 -**Exit criteria** (the milestone is done only when all of thes
+          -e are checked)                                                
+       14 -- [] Instance + debug messenger, validation breaks into the de
+          -bugger on errors                                              
+       15 -- [] Device selection (Vulkan 1.3 features required)          
+       16 -- [ ] Swapchain + 2 frames in flight, one render-finished sema
+          -phore per image                                               
+       17 -- [ ] Triangle rendered through `rhi::Device` (no Vulkan types
+          - outside `rhi_vulkan/`)                                       
+       18 -- [ ] Survives resize and minimize with **zero** validation or
+          - sync-validation messages                                     
+       32 +**Exit criteria**                                             
+       33 +- [ ] CMake ≥ 3.25 + Ninja, `CMakePresets.json` (`windows-debu
+          +g`, `windows-release`, `linux-debug`)                         
+       34 +- [ ] `third_party/` submodules for GLFW and Tracy, wrapped in
+          + `third_party/CMakeLists.txt`                                 
+       35 +- [ ] Logging, asserts (break into debugger), crash dumps (`Mi
+          +niDumpWriteDump`)                                             
+       36 +- [ ] Platform interface (`core/platform/`) with a GLFW backen
+          +d: window opens, input events are logged                      
+       37 +- [ ] High-resolution timer, basic math, basic containers     
+       38 +- [ ] Tracy client connects and shows frame zones             
+       39 +- [ ] CI builds on Windows (MSVC or clang-cl) and Linux (GCC o
+          +r Clang)                                                      
+       40  
+       41  **Tasks**
+       21 -- [x] volk + VMA wired in                                     
+       22 -- [ ] Deletion queue keyed on timeline semaphore              
+       23 -- [ ] RenderDoc in-app capture hotkey                         
+       42 +- [x] Git repository (branch `dev`)                           
+       43 +- [x] `CLAUDE.md` with layering rules and conventions         
+       44 +- [x] `.gitignore`                                            
+       45 +- [x] Claude skills: `engine-build`, `add-dependency`, `vulkan
+          +-debug`                                                       
+       46 +- [ ] Folder layout (`engine/`, `third_party/`, `tools/`, `gam
+          +e/`, `shaders/`)                                              
+       47 +- [ ] `third_party/LICENSES.md`                               
+       48 +- [ ] Compiler warning settings (`/W4 /WX`, `-Wall -Wextra -We
+          +rror`) for engine targets                                     
+       49  
+       50  **Notes / decisions**
+       26 -- 2026-11-12: chose FIFO by default, MAILBOX when available.  
+       51  
+       28 -**Demo:** `docs/demos/m1.gif`                                 
+       52 +**Demo:**                                                     
+       53 +                                                              
+       54 +---                                                           
+       55 +                                                              
+       56 +## Exit criteria for later milestones                         
+       57 +                                                              
+       58 +**M1 — Vulkan bootstrap**                                     
+       59 +- [ ] Instance + debug messenger; validation errors break into
+          + the debugger                                                 
+       60 +- [ ] Device selection requiring Vulkan 1.3 features          
+       61 +- [ ] Swapchain + 2 frames in flight, one render-finished sema
+          +phore per swapchain image                                     
+       62 +- [ ] Triangle rendered through `rhi::Device` (no Vulkan types
+          + outside `rhi_vulkan/`)                                       
+       63 +- [ ] Survives resize and minimize with zero validation or syn
+          +c-validation messages                                         
+       64 +                                                              
+       65 +**M2 — Render core**                                          
+       66 +- [ ] VMA, staging uploads, bindless descriptors              
+       67 +- [ ] glTF model rendered with textures, camera and depth (rev
+          +erse-Z)                                                       
+       68 +- [ ] ImGui through the RHI                                   
+       69 +- [ ] Slang shaders with the fixed binding convention; shader 
+          +hot reload                                                    
+       70 +- [ ] Pipeline cache persisted to disk                        
+       71 +- [ ] Null backend runs the same frame headless               
+       72 +                                                              
+       73 +**M3 — Memory + jobs**                                        
+       74 +- [ ] Frame, pool and TLSF allocators with per-subsystem track
+          +ing UI                                                        
+       75 +- [ ] Work-stealing job system with counters                  
+       76 +- [ ] Parallel command recording; Tracy shows work spread acro
+          +ss cores                                                      
+       77 +- [ ] No leaks at exit                                        
+       78 +                                                              
+       79 +**M4 — Scene + assets**                                       
+       80 +- [ ] ECS with transform hierarchy                            
+       81 +- [ ] Reflection system                                       
+       82 +- [ ] Scene save/load                                         
+       83 +- [ ] Asset cooker + asset DB with GUIDs                      
+       84 +- [ ] 10k entities spawned and rendered                       
+       85 +                                                              
+       86 +**M5 — Render graph + lighting**                              
+       87 +- [ ] Render graph with automatic barriers (abstract `Resource
+          +State` only)                                                  
+       88 +- [ ] PBR, shadow maps, HDR + tonemapping, frustum culling, de
+          +bug draw                                                      
+       89 +- [ ] Render graph visualizer                                 
+       90 +- [ ] Lit scene at a stable frame rate                        
+       91 +                                                              
+       92 +**M5b — D3D12 backend**                                       
+       93 +- [ ] Same scenes and shaders render on D3D12                 
+       94 +- [ ] Golden-image tests pass on Vulkan and D3D12 within toler
+          +ance                                                          
+       95 +- [ ] D3D12 debug layer + GPU-based validation clean          
+       96 +                                                              
+       97 +**M6 — 2D + text + localization**                             
+       98 +- [ ] Sprite batcher and tilemaps                             
+       99 +- [ ] MSDF text with HarfBuzz shaping                         
+      100 +- [ ] String tables with runtime locale switching, including o
+          +ne complex-script language                                    
+      101 +- [ ] Pseudo-locale                                           
+      102 +                                                              
+      103 +**M7 — Physics**                                              
+      104 +- [ ] Shapes, broadphase, narrowphase, sequential-impulse solv
+          +er                                                            
+      105 +- [ ] Raycasts, triggers, character controller                
+      106 +- [ ] Stable stack of 20 boxes; no tunneling for fast bodies  
+      107 +                                                              
+      108 +**M8 — Audio**                                                
+      109 +- [ ] Mixer, buses, streaming music, 3D sounds, ducking       
+      110 +- [ ] No glitches under heavy CPU load                        
+      111 +                                                              
+      112 +**M9 — Animation**                                            
+      113 +- [ ] GPU skinning, clip playback, blend tree, state machine, 
+          +two-bone IK                                                   
+      114 +- [ ] Character walks and runs, blending on input             
+      115 +                                                              
+      116 +**M10 — Scripting**                                           
+      117 +- [ ] Lua VM with reflection-driven bindings                  
+      118 +- [ ] Script hot reload                                       
+      119 +- [ ] A gameplay sample written entirely in Lua               
+      120 +                                                              
+      121 +**M11 — AI**                                                  
+      122 +- [ ] Behavior trees with blackboard                          
+      123 +- [ ] Navmesh + pathfinding, perception                       
+      124 +- [ ] NPCs patrol, chase and lose the player                  
+      125 +                                                              
+      126 +**M12 — Streaming**                                           
+      127 +- [ ] Async IO thread, transfer-queue uploads, LOD/mip streami
+          +ng, memory budget                                             
+      128 +- [ ] Level larger than the VRAM budget loads with no hitch ab
+          +ove 2 ms                                                      
+      129 +                                                              
+      130 +**M13 — Networking**                                          
+      131 +- [ ] UDP transport with reliability layer                    
+      132 +- [ ] Replication, client-side prediction, interpolation      
+      133 +- [ ] 2–4 players playable at simulated 150 ms latency and 5% 
+          +packet loss                                                   
+      134 +                                                              
+      135 +**M14 — Cinematics**                                          
+      136 +- [ ] Timeline asset with camera, animation, audio and subtitl
+          +e tracks                                                      
+      137 +- [ ] Scrubbing in the editor                                 
+      138 +- [ ] A scripted cutscene plays end to end                    
+      139 +                                                              
+      140 +**M15 — Editor** (ongoing)                                    
+      141 +- [ ] Scene editor with reflection-driven inspector and gizmos
+      142 +- [ ] Play-in-editor                                          
+      143 +- [ ] A level can be built without touching code              
+
+● I rewrote docs/milestones.md so it matches the repo as it is now.
+
+  - Status table: lists all 17 milestones (M0–M15 plus M5b for the D3D12
+    backend). Only M0 is 🚧 In progress, started 2026-10-21. Everything else is
+    ⏳ Planned with no dates, and no milestone has a tag.
+  - M0 section: replaces the old M1 section.
+    - Exit criteria: CMake with presets, GLFW and Tracy as submodules,
+      logging/asserts/crash dumps, the platform interface with a GLFW window,
+      timer/math/containers, Tracy connecting, and CI on Windows and Linux.
+    - Already checked off: only work that really exists: the git repo on dev,
+      CLAUDE.md, .gitignore, and the three skills.
+    - Still open: the folder layout, third_party/LICENSES.md, and compiler
+      warning settings.
+  - Removed: the made-up decision note, the m1.gif demo path, and the m0 tag. I
+    also fixed the - [] checkboxes you'd edited, which needed a space to render.
+  - Added: short rules at the top (exit criteria are fixed once a milestone
+    starts, done means demo-able, tag each finished milestone), and exit
+    criteria for every later milestone taken from the plan.
+
+  You didn't say whether you wanted exit criteria for all milestones or just M0,
+  so I wrote them for all. They're only locked once each milestone starts, so
+  you can still change them until then.
+
+  The file isn't committed yet.

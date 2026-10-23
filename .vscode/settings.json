@@ -1,0 +1,26 @@
+{
+    // CMake Tools drives configure/build from CMakePresets.json.
+    "cmake.useCMakePresets": "always",
+    "cmake.configureOnOpen": true,
+    "cmake.buildBeforeRun": true,
+
+    // IntelliSense gets flags, defines and the C++ standard from CMake Tools per file,
+    // including headers, so it matches the real build.
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    "C_Cpp.default.cppStandard": "c++20",
+    "C_Cpp.default.cStandard": "c17",
+
+    "files.associations": {
+        "*.slang": "hlsl"
+    },
+    "files.exclude": {
+        "build/": true
+    },
+    "search.exclude": {
+        "build/": true,
+        "third_party/": true
+    },
+    "files.encoding": "utf8",
+    "files.insertFinalNewline": true,
+    "files.trimTrailingWhitespace": true
+}

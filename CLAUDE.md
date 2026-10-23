@@ -13,6 +13,8 @@ C++20 game engine. Vulkan first (D3D12, Metal, WebGPU later), GLFW as one platfo
 - The audio thread never locks, allocates or does IO.
 
 ## Conventions
+- Naming: namespaces, types, public functions, public members and public constants are PascalCase (`Lmao::Log::SetLevel`, `Config::FilePath`, `Math::Pi`). Private members, file-local (anonymous-namespace) functions and constants, parameters and locals are snake_case. Macros are `LMAO_UPPER_CASE`.
+  - Classes: member functions follow the same rule (public PascalCase, private/protected snake_case). Private/protected data members use `m` + PascalCase (`mInstance`). Static data members of any access use `s` + PascalCase (`sInstance`). Public non-static data members stay PascalCase. Plain structs don't use the `m`/`s` prefixes.
 - Right-handed world, Y-up, column-major matrices, depth range 0..1, **reverse-Z** (clear 0, compare GREATER), `D32_SFLOAT`.
 - Vulkan Y flip via negative viewport height; GL uses `glClipControl(GL_UPPER_LEFT, GL_ZERO_TO_ONE)`.
 - Strings are UTF-8 everywhere; convert only at OS API boundaries.
@@ -22,3 +24,9 @@ C++20 game engine. Vulkan first (D3D12, Metal, WebGPU later), GLFW as one platfo
 
 ## Build
 See the `engine-build` skill. CMake ≥ 3.25 + Ninja, presets in `CMakePresets.json`.
+
+## Docs
+- `docs/architecture.md`: overall design, RHI, Vulkan backend, platform layer, libraries.
+- `docs/decisions/`: one record per decision. Add a new record instead of rewriting an accepted one.
+- `docs/milestones.md`: current milestone, exit criteria, status. Keep it in sync with real progress.
+- `docs/debugging.md`: debugging infrastructure and techniques.
