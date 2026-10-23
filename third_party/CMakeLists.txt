@@ -47,4 +47,14 @@ target_compile_definitions(glm INTERFACE
     GLM_FORCE_DEPTH_ZERO_TO_ONE
     GLM_FORCE_RIGHT_HANDED)
 
+# --- VulkanMemoryAllocator (MIT) ---------------------------------------------
+# Header-only INTERFACE target GPUOpen::VulkanMemoryAllocator. VMA_IMPLEMENTATION goes in
+# exactly one .cpp in rhi_vulkan, with VMA_STATIC_VULKAN_FUNCTIONS=0 and
+# VMA_DYNAMIC_VULKAN_FUNCTIONS=1 (functions come from volk).
+# TODO(M1): link Vulkan::Headers once the Vulkan-Headers submodule is added.
+set(VMA_BUILD_SAMPLES       OFF CACHE BOOL "" FORCE)
+set(VMA_BUILD_DOCUMENTATION OFF CACHE BOOL "" FORCE)
+set(VMA_ENABLE_INSTALL      OFF CACHE BOOL "" FORCE)
+add_subdirectory(VulkanMemoryAllocator SYSTEM EXCLUDE_FROM_ALL)
+
 tp_folder(glfw TracyClient spdlog)
