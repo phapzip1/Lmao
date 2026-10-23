@@ -30,12 +30,12 @@ Rules:
 ## M0 — Foundation 🚧
 
 **Exit criteria**
-- [ ] CMake ≥ 3.25 + Ninja, `CMakePresets.json` (`windows-debug`, `windows-release`, `linux-debug`)
-- [ ] `third_party/` submodules for GLFW and Tracy, wrapped in `third_party/CMakeLists.txt`
-- [ ] Logging, asserts (break into debugger), crash dumps (`MiniDumpWriteDump`)
-- [ ] Platform interface (`core/platform/`) with a GLFW backend: window opens, input events are logged
-- [ ] High-resolution timer, basic math, basic containers
-- [ ] Tracy client connects and shows frame zones
+- [x] CMake ≥ 3.25 + Ninja, `CMakePresets.json` (`windows-debug`, `windows-release`, `linux-debug`)
+- [x] `third_party/` submodules for GLFW and Tracy, wrapped in `third_party/CMakeLists.txt`
+- [ ] Logging, asserts (break into debugger), crash dumps (`MiniDumpWriteDump`). Logging and asserts work; no crash dump has been written yet. Trigger `LMAO_FATAL` once and open the `.dmp` in Visual Studio
+- [x] Platform interface (`core/platform/`) with a GLFW backend: window opens, input events are logged
+- [x] High-resolution timer, basic math, basic containers
+- [x] Tracy client connects and shows frame zones (Profiler 0.14.1, 2026-10-24)
 - [ ] CI builds on Windows (MSVC or clang-cl) and Linux (GCC or Clang)
 
 **Tasks**
@@ -43,11 +43,17 @@ Rules:
 - [x] `CLAUDE.md` with layering rules and conventions
 - [x] `.gitignore`
 - [x] Claude skills: `engine-build`, `add-dependency`, `vulkan-debug`
-- [ ] Folder layout (`engine/`, `third_party/`, `tools/`, `game/`, `shaders/`)
-- [ ] `third_party/LICENSES.md`
-- [ ] Compiler warning settings (`/W4 /WX`, `-Wall -Wextra -Werror`) for engine targets
+- [x] Folder layout (`engine/`, `third_party/`, `game/`). `tools/` and `shaders/` are created when first used in M2
+- [x] `third_party/LICENSES.md`
+- [x] Compiler warning settings (`/W4 /WX`, `-Wall -Wextra -Werror`) for engine targets (`cmake/LmaoWarnings.cmake`)
+- [x] `windows-debug` and `windows-release` build
+- [ ] `linux-debug` builds (first done by CI)
 
 **Notes / decisions**
+- 2026-10-23: CMake 4.5 adds `import std` support to every C++20 target with module scanning on, which broke the C-only `glfw` target under Ninja. Module scanning is off project-wide (`CMAKE_CXX_SCAN_FOR_MODULES OFF`); the engine doesn't use C++ modules.
+- 2026-10-24: Configuring outside a Visual Studio developer environment caches the wrong toolchain values (empty default flags, or GNU `ld` from a GCC on PATH). The root `CMakeLists.txt` now stops early when an MSVC compiler is cached with a non-MSVC linker.
+- 2026-10-24: Tracy pinned to `v0.14.1` so the official prebuilt profiler (same protocol version) can connect. The profiler goes in `tools/bin/tracy/`.
+- On Windows, `sleep_for(16ms)` lasts about 31 ms because of the default 15.6 ms timer tick. Real frame pacing will come from vsync (M1).
 
 **Demo:**
 
