@@ -54,6 +54,7 @@ imgui.ini
 *.nvdbg
 *.wpix
 logs/
+crashes/
 *.log
 
 # ---- IDEs & editors ----

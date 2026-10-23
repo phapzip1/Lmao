@@ -24,7 +24,7 @@ L0  Core                Platform · Memory · Jobs · Math · Containers · Log/
 
 ```
 engine/
-  core/          platform/ platform_glfw/ platform_win32/ platform_posix/
+  core/          platform/ (interfaces) + platform/platforms/{glfw,win32,posix}/ (backends)
                  memory/ jobs/ math/ containers/ log/ io/ reflect/ profile/
   rhi/           interface only — no backend headers
   rhi_vulkan/    rhi_d3d12/    rhi_null/    (later: rhi_metal/ rhi_webgpu/ rhi_gl/)
