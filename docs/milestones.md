@@ -48,7 +48,7 @@ Rules:
 - [x] Compiler warning settings (`/W4 /WX`, `-Wall -Wextra -Werror`) for engine targets (`cmake/LmaoWarnings.cmake`)
 - [x] `windows-debug` and `windows-release` build
 - [x] `linux-debug` builds (in CI)
-- [ ] Pin GLFW to a release tag (currently one commit past `3.5.1`)
+- [x] Pin GLFW to a release tag (currently one commit past `3.5.1`)
 
 **Notes / decisions**
 - 2026-10-23: CMake 4.5 adds `import std` support to every C++20 target with module scanning on, which broke the C-only `glfw` target under Ninja. Module scanning is off project-wide (`CMAKE_CXX_SCAN_FOR_MODULES OFF`); the engine doesn't use C++ modules.
