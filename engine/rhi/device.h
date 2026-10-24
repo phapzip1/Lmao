@@ -8,6 +8,7 @@
 //     LMAO_INFO("GPU: {}", device->GetAdapterInfo().Name);
 
 #include "rhi/command_list.h"
+#include "rhi/pipeline.h"
 #include "rhi/swapchain.h"
 #include "rhi/types.h"
 
@@ -63,6 +64,10 @@ namespace Lmao::Rhi
     //     if (Rhi::CommandList *commands = device->BeginFrame(*swapchain))
     //     {
     //         commands->BeginRendering({.Texture = swapchain->GetCurrentTexture(), .ClearColor = color});
+    //         commands->SetViewport({.Width = w, .Height = h});
+    //         commands->SetScissor({.Width = w, .Height = h});
+    //         commands->BindPipeline(pipeline);
+    //         commands->Draw(3);
     //         commands->EndRendering();
     //         device->EndFrame();
     //     }
@@ -88,6 +93,12 @@ namespace Lmao::Rhi
 
         // nullptr on failure (the reason is logged).
         virtual std::unique_ptr<Swapchain> CreateSwapchain(const SwapchainDesc &desc) = 0;
+
+        // An invalid handle on failure (the reason is logged).
+        virtual PipelineHandle CreateGraphicsPipeline(const GraphicsPipelineDesc &desc) = 0;
+        // Safe to call while frames using the pipeline are in flight: destruction is deferred
+        // until the GPU is done with them.
+        virtual void DestroyPipeline(PipelineHandle pipeline) = 0;
 
         // Waits until the GPU is done with the frame slot being reused, acquires the swapchain's
         // next image and starts recording. nullptr means "skip this frame" (minimized, or the

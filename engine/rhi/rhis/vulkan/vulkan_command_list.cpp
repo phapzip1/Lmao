@@ -58,6 +58,7 @@ namespace Lmao::Rhi::Vulkan
     {
         LMAO_ASSERT(mCommandBuffer == VK_NULL_HANDLE, "command list is already recording");
         mCommandBuffer = command_buffer;
+        mPipelineBound = false;
         const VkCommandBufferBeginInfo begin_info{
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
@@ -119,6 +120,40 @@ namespace Lmao::Rhi::Vulkan
         LMAO_ASSERT(mRendering, "EndRendering without BeginRendering");
         vkCmdEndRendering(mCommandBuffer);
         mRendering = false;
+    }
+
+    void VulkanCommandList::SetViewport(const Viewport &viewport)
+    {
+        // Y flip: a negative height makes clip space Y-up like the other backends (engine convention).
+        const VkViewport vk_viewport{
+            .x = viewport.X,
+            .y = viewport.Y + viewport.Height,
+            .width = viewport.Width,
+            .height = -viewport.Height,
+            .minDepth = viewport.MinDepth,
+            .maxDepth = viewport.MaxDepth,
+        };
+        vkCmdSetViewport(mCommandBuffer, 0, 1, &vk_viewport);
+    }
+
+    void VulkanCommandList::SetScissor(const Rect &scissor)
+    {
+        const VkRect2D rect{.offset = {scissor.X, scissor.Y}, .extent = {scissor.Width, scissor.Height}};
+        vkCmdSetScissor(mCommandBuffer, 0, 1, &rect);
+    }
+
+    void VulkanCommandList::BindPipeline(PipelineHandle pipeline)
+    {
+        vkCmdBindPipeline(mCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, mDevice.GetPipeline(pipeline).Handle);
+        mPipelineBound = true;
+    }
+
+    void VulkanCommandList::Draw(uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex,
+                                 uint32_t first_instance)
+    {
+        LMAO_ASSERT(mRendering, "Draw outside BeginRendering/EndRendering");
+        LMAO_ASSERT(mPipelineBound, "Draw without a bound pipeline");
+        vkCmdDraw(mCommandBuffer, vertex_count, instance_count, first_vertex, first_instance);
     }
 
     void VulkanCommandList::BeginMarker(std::string_view name)

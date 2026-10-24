@@ -10,6 +10,7 @@ Presets live in `CMakePresets.json` (`windows-debug`, `windows-release`, `linux-
 
 ```powershell
 git submodule update --init --recursive      # after a fresh clone or a submodule bump
+scripts/setup.ps1                             # prebuilt tools (slangc) into tools/bin/; scripts/setup.sh on Linux
 cmake --preset windows-debug                  # configure (Ninja, clang-cl or MSVC)
 cmake --build --preset windows-debug          # build
 ctest --preset windows-debug                  # tests

@@ -10,6 +10,7 @@ add_library(lmao_rhi_vulkan STATIC
     vulkan_device_internal.h
     vulkan_instance.h
     vulkan_instance.cpp
+    vulkan_pipeline.cpp
     vulkan_surface.h
     vulkan_surface.cpp # the only file that includes window-system headers
     vulkan_swapchain.h

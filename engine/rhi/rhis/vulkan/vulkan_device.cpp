@@ -27,12 +27,14 @@ namespace Lmao::Rhi::Vulkan
         struct FeatureChain
         {
             VkPhysicalDeviceFeatures2 Features2{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+            VkPhysicalDeviceVulkan11Features Vulkan11{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
             VkPhysicalDeviceVulkan12Features Vulkan12{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
             VkPhysicalDeviceVulkan13Features Vulkan13{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
 
             FeatureChain()
             {
-                Features2.pNext = &Vulkan12;
+                Features2.pNext = &Vulkan11;
+                Vulkan11.pNext = &Vulkan12;
                 Vulkan12.pNext = &Vulkan13;
             }
 
@@ -49,6 +51,8 @@ namespace Lmao::Rhi::Vulkan
             fn("synchronization2", chain.Vulkan13.synchronization2);
             fn("timelineSemaphore", chain.Vulkan12.timelineSemaphore);
             fn("bufferDeviceAddress", chain.Vulkan12.bufferDeviceAddress);
+            // Slang lowers SV_VertexID to gl_VertexIndex - gl_BaseVertex; also SV_DrawIndex later
+            fn("shaderDrawParameters", chain.Vulkan11.shaderDrawParameters);
             // Bindless descriptors
             fn("descriptorIndexing", chain.Vulkan12.descriptorIndexing);
             fn("runtimeDescriptorArray", chain.Vulkan12.runtimeDescriptorArray);
@@ -246,7 +250,7 @@ namespace Lmao::Rhi::Vulkan
             LMAO_LOG_INFO(LogChannel(), "Using GPU: {} ({}, driver {})", info.Name, ToString(info.Type), info.Driver);
             auto vulkan_device = std::make_unique<VulkanDevice>(std::move(instance), best.Physical, device,
                                                                 best.QueueFamily, std::move(info));
-            if (!vulkan_device->CreateFrameResources())
+            if (!vulkan_device->Initialize())
                 return nullptr;
             return vulkan_device;
         }
@@ -267,7 +271,11 @@ namespace Lmao::Rhi::Vulkan
     {
         LMAO_ASSERT(mSwapchainCount == 0, "{} swapchain(s) still alive when the device was destroyed", mSwapchainCount);
         LMAO_ASSERT(mTextures.IsEmpty(), "{} texture(s) still alive when the device was destroyed", mTextures.Size());
+        LMAO_ASSERT(mPipelines.IsEmpty(), "{} pipeline(s) still alive when the device was destroyed", mPipelines.Size());
         vkDeviceWaitIdle(mDevice);
+        destroy_pending(true);
+        if (mPipelineLayout != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(mDevice, mPipelineLayout, nullptr);
         destroy_frame_resources();
         vkDestroyDevice(mDevice, nullptr);
         device_exists = false;
@@ -279,8 +287,18 @@ namespace Lmao::Rhi::Vulkan
         Check(vkDeviceWaitIdle(mDevice), "vkDeviceWaitIdle");
     }
 
-    bool VulkanDevice::CreateFrameResources()
+    bool VulkanDevice::Initialize()
     {
+        const VkPushConstantRange push_constants{.stageFlags = VK_SHADER_STAGE_ALL, .offset = 0, .size = 128};
+        const VkPipelineLayoutCreateInfo layout_info{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &push_constants,
+        };
+        if (!Check(vkCreatePipelineLayout(mDevice, &layout_info, nullptr, &mPipelineLayout), "vkCreatePipelineLayout"))
+            return false;
+        SetName(VK_OBJECT_TYPE_PIPELINE_LAYOUT, mPipelineLayout, "Global pipeline layout");
+
         VkSemaphoreTypeCreateInfo timeline_type{
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
             .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
@@ -338,6 +356,20 @@ namespace Lmao::Rhi::Vulkan
         mFrameTimeline = VK_NULL_HANDLE;
     }
 
+    void VulkanDevice::destroy_pending(bool everything)
+    {
+        uint64_t completed = 0;
+        if (!everything)
+            Check(vkGetSemaphoreCounterValue(mDevice, mFrameTimeline, &completed), "vkGetSemaphoreCounterValue");
+        std::erase_if(mPendingDestroys, [&](const PendingDestroy &pending)
+                      {
+                          if (!everything && pending.frame > completed)
+                              return false;
+                          vkDestroyPipeline(mDevice, pending.pipeline, nullptr);
+                          return true;
+                      });
+    }
+
     std::unique_ptr<Swapchain> VulkanDevice::CreateSwapchain(const SwapchainDesc &desc)
     {
         return VulkanSwapchain::Create(*this, desc);
@@ -361,6 +393,8 @@ namespace Lmao::Rhi::Vulkan
             if (!Check(vkWaitSemaphores(mDevice, &wait_info, UINT64_MAX), "vkWaitSemaphores"))
                 return nullptr;
         }
+
+        destroy_pending(false);
 
         auto &vulkan_swapchain = static_cast<VulkanSwapchain &>(swapchain);
         if (!vulkan_swapchain.Acquire(frame.image_acquired))

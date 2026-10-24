@@ -19,6 +19,11 @@ namespace Lmao::Rhi::Vulkan
         using CommandList::BeginRendering; // keep the single-attachment overload visible
         void BeginRendering(std::span<const ColorAttachment> color_attachments) override;
         void EndRendering() override;
+        void SetViewport(const Viewport &viewport) override;
+        void SetScissor(const Rect &scissor) override;
+        void BindPipeline(PipelineHandle pipeline) override;
+        void Draw(uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex,
+                  uint32_t first_instance) override;
         void BeginMarker(std::string_view name) override;
         void EndMarker() override;
 
@@ -33,6 +38,7 @@ namespace Lmao::Rhi::Vulkan
         VulkanDevice &mDevice;
         VkCommandBuffer mCommandBuffer = VK_NULL_HANDLE;
         bool mRendering = false;
+        bool mPipelineBound = false;
         int mMarkerDepth = 0;
     };
 

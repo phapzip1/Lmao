@@ -1,5 +1,5 @@
-// Sandbox: opens a window, creates the GPU device and a swapchain, clears the screen to a
-// slowly changing color, logs every input event, and marks frames for Tracy.
+// Sandbox: opens a window, creates the GPU device and a swapchain, draws a triangle over a
+// slowly changing background, logs every input event, and marks frames for Tracy.
 // Esc closes the window; V toggles vsync.
 
 #include "core/log/log.h"
@@ -8,8 +8,10 @@
 #include "core/platform/time.h"
 #include "core/profile/profile.h"
 #include "rhi/device.h"
+#include "shaders/triangle.spv.h"
 
 #include <cmath>
+#include <span>
 #include <variant>
 
 using namespace Lmao;
@@ -82,6 +84,17 @@ int main()
         if (!swapchain)
             return 1;
 
+        const Rhi::Format color_formats[] = {swapchain->GetFormat()};
+        const auto triangle_code = std::as_bytes(std::span(Shaders::Triangle));
+        const Rhi::PipelineHandle triangle = device->CreateGraphicsPipeline({
+            .Vertex = {.Code = triangle_code, .EntryPoint = "vertexMain"},
+            .Fragment = {.Code = triangle_code, .EntryPoint = "fragmentMain"},
+            .ColorFormats = color_formats,
+            .DebugName = "Triangle",
+        });
+        if (!triangle)
+            return 1;
+
         Stopwatch clock;
         Stopwatch frame_timer;
         while (!window->ShouldClose())
@@ -108,11 +121,17 @@ int main()
             if (Rhi::CommandList *commands = device->BeginFrame(*swapchain))
             {
                 const float t = static_cast<float>(clock.ElapsedSeconds());
-                const Vec4 color(0.5f + 0.5f * std::sin(t), 0.5f + 0.5f * std::sin(t + 2.1f),
-                                 0.5f + 0.5f * std::sin(t + 4.2f), 1.0f);
+                // Dim, so the triangle stands out.
+                const Vec4 background(0.1f + 0.05f * std::sin(t), 0.1f + 0.05f * std::sin(t + 2.1f),
+                                      0.1f + 0.05f * std::sin(t + 4.2f), 1.0f);
+                const UVec2 size = swapchain->GetSize();
 
-                commands->BeginMarker("Clear");
-                commands->BeginRendering({.Texture = swapchain->GetCurrentTexture(), .ClearColor = color});
+                commands->BeginMarker("Triangle pass");
+                commands->BeginRendering({.Texture = swapchain->GetCurrentTexture(), .ClearColor = background});
+                commands->SetViewport({.Width = static_cast<float>(size.x), .Height = static_cast<float>(size.y)});
+                commands->SetScissor({.Width = size.x, .Height = size.y});
+                commands->BindPipeline(triangle);
+                commands->Draw(3);
                 commands->EndRendering();
                 commands->EndMarker();
                 device->EndFrame();
@@ -121,6 +140,8 @@ int main()
             LMAO_PROFILE_PLOT("Frame time (ms)", frame_timer.Lap() * 1000.0);
             LMAO_PROFILE_FRAME();
         }
+
+        device->DestroyPipeline(triangle);
     } // swapchain, device, window, then platform destroyed here (reverse order of creation)
 
     LMAO_INFO("Bye");

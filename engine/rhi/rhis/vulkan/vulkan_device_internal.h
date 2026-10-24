@@ -11,6 +11,7 @@
 
 #include <array>
 #include <memory>
+#include <vector>
 
 namespace Lmao::Rhi::Vulkan
 {
@@ -28,6 +29,11 @@ namespace Lmao::Rhi::Vulkan
         VkImageLayout Layout = VK_IMAGE_LAYOUT_UNDEFINED;
     };
 
+    struct Pipeline
+    {
+        VkPipeline Handle = VK_NULL_HANDLE;
+    };
+
     class VulkanDevice final : public Device
     {
     public:
@@ -40,6 +46,8 @@ namespace Lmao::Rhi::Vulkan
         const AdapterInfo &GetAdapterInfo() const override { return mAdapterInfo; }
         void WaitIdle() override;
         std::unique_ptr<Swapchain> CreateSwapchain(const SwapchainDesc &desc) override;
+        PipelineHandle CreateGraphicsPipeline(const GraphicsPipelineDesc &desc) override;
+        void DestroyPipeline(PipelineHandle pipeline) override;
         CommandList *BeginFrame(Swapchain &swapchain) override;
         void EndFrame() override;
 
@@ -53,9 +61,14 @@ namespace Lmao::Rhi::Vulkan
         TextureHandle RegisterTexture(const Texture &texture) { return mTextures.Insert(texture); }
         void UnregisterTexture(TextureHandle handle) { mTextures.Remove(handle); }
         Texture &GetTexture(TextureHandle handle) { return mTextures[handle]; }
+        Pipeline &GetPipeline(PipelineHandle handle) { return mPipelines[handle]; }
+
+        // Shared by every pipeline: the 128-byte push constant range of the binding convention.
+        // Descriptor sets (set0 bindless, set1 per-frame) are added with bindless in M2.
+        VkPipelineLayout GetPipelineLayout() const { return mPipelineLayout; }
 
         // Called once by CreateDevice. false on failure (the reason is logged).
-        bool CreateFrameResources();
+        bool Initialize();
 
         void OnSwapchainCreated() { ++mSwapchainCount; }
         void OnSwapchainDestroyed() { --mSwapchainCount; }
@@ -86,7 +99,15 @@ namespace Lmao::Rhi::Vulkan
             uint64_t timeline_value = 0;
         };
 
+        // A Vulkan object whose handle is gone but which frames up to `frame` may still use.
+        struct PendingDestroy
+        {
+            uint64_t frame;
+            VkPipeline pipeline;
+        };
+
         void destroy_frame_resources();
+        void destroy_pending(bool everything); // everything: only after WaitIdle
 
         std::unique_ptr<Instance> mInstance; // declared first: destroyed after the device
         VkPhysicalDevice mPhysicalDevice;
@@ -103,6 +124,9 @@ namespace Lmao::Rhi::Vulkan
         VulkanCommandList mCommandList;
 
         SlotMap<Texture, TextureTag> mTextures;
+        SlotMap<Pipeline, PipelineTag> mPipelines;
+        VkPipelineLayout mPipelineLayout = VK_NULL_HANDLE;
+        std::vector<PendingDestroy> mPendingDestroys;
         int mSwapchainCount = 0;
     };
 

@@ -5,6 +5,7 @@
 // by the caller.
 
 #include "core/math/math.h"
+#include "rhi/pipeline.h"
 #include "rhi/types.h"
 
 #include <span>
@@ -46,6 +47,14 @@ namespace Lmao::Rhi
         virtual void BeginRendering(std::span<const ColorAttachment> color_attachments) = 0;
         void BeginRendering(const ColorAttachment &color_attachment) { BeginRendering({&color_attachment, 1}); }
         virtual void EndRendering() = 0;
+
+        // Viewport and scissor are dynamic state: set them after BeginRendering, before drawing.
+        virtual void SetViewport(const Viewport &viewport) = 0;
+        virtual void SetScissor(const Rect &scissor) = 0;
+
+        virtual void BindPipeline(PipelineHandle pipeline) = 0;
+        virtual void Draw(uint32_t vertex_count, uint32_t instance_count = 1, uint32_t first_vertex = 0,
+                          uint32_t first_instance = 0) = 0;
 
         // Debug markers: show up as named regions in RenderDoc, Nsight and validation messages.
         virtual void BeginMarker(std::string_view name) = 0;
