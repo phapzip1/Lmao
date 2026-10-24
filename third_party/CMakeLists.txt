@@ -66,7 +66,8 @@ if(WIN32)
     # vulkan.h then includes <windows.h>, so trim it.
     set(VOLK_STATIC_DEFINES VK_USE_PLATFORM_WIN32_KHR WIN32_LEAN_AND_MEAN NOMINMAX CACHE STRING "" FORCE)
 endif()
-# TODO(M1): Linux surface defines (VK_USE_PLATFORM_XLIB_KHR / VK_USE_PLATFORM_WAYLAND_KHR).
+# Linux needs no defines here: X11/Wayland surface functions are loaded with vkGetInstanceProcAddr
+# in engine/rhi/rhis/vulkan/vulkan_surface.cpp, keeping <X11/Xlib.h> macros out of the backend.
 add_subdirectory(volk SYSTEM EXCLUDE_FROM_ALL)
 target_link_libraries(volk PUBLIC Vulkan::Headers)
 

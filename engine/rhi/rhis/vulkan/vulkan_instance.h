@@ -3,8 +3,10 @@
 // Vulkan instance, function loading (volk) and the debug messenger that reports validation
 // messages to the log. Internal to rhi/rhis/vulkan/.
 
+#include "core/platform/window.h"
 #include "rhi/rhis/vulkan/vulkan_common.h"
 
+#include <cstdint>
 #include <memory>
 #include <string_view>
 
@@ -17,6 +19,8 @@ namespace Lmao::Rhi::Vulkan
         bool EnableValidation = false;
         bool BreakOnValidationError = true;
     };
+
+    constexpr uint32_t WindowTypeBit(NativeWindowType type) { return 1u << static_cast<uint32_t>(type); }
 
     // Read by the debug messenger callback. Lives inside Instance, so its address is stable.
     struct MessengerState
@@ -41,12 +45,16 @@ namespace Lmao::Rhi::Vulkan
         bool HasDebugUtils() const { return mHasDebugUtils; }
         bool IsValidationEnabled() const { return mValidationEnabled; }
 
+        // The surface extension for this window type is enabled (see Surface::Create).
+        bool SupportsWindowType(NativeWindowType type) const { return (mWindowTypes & WindowTypeBit(type)) != 0; }
+
     private:
         Instance() = default;
 
         VkInstance mInstance = VK_NULL_HANDLE;
         VkDebugUtilsMessengerEXT mMessenger = VK_NULL_HANDLE;
         MessengerState mMessengerState;
+        uint32_t mWindowTypes = 0; // WindowTypeBit() of each enabled surface extension
         bool mHasDebugUtils = false;
         bool mValidationEnabled = false;
     };

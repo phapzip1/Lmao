@@ -7,6 +7,8 @@ add_library(lmao_rhi_vulkan STATIC
     vulkan_device.cpp
     vulkan_instance.h
     vulkan_instance.cpp
+    vulkan_surface.h
+    vulkan_surface.cpp # the only file that includes window-system headers
 )
 
 target_link_libraries(lmao_rhi_vulkan

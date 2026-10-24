@@ -91,6 +91,32 @@ namespace Lmao::Rhi::Vulkan
             return extensions;
         }
 
+        // Surface extensions per window system. Names are spelled out because their macros live in
+        // vulkan_win32.h / vulkan_xlib.h / vulkan_wayland.h, which only vulkan_surface.cpp includes.
+        struct WindowSystemExtension
+        {
+            NativeWindowType type;
+            const char *name;
+            const char *label;
+        };
+
+        constexpr WindowSystemExtension window_system_extensions[] = {
+#if defined(_WIN32)
+            {NativeWindowType::Win32, "VK_KHR_win32_surface", "Win32"},
+#elif defined(__linux__)
+            {NativeWindowType::X11, "VK_KHR_xlib_surface", "X11"},
+            {NativeWindowType::Wayland, "VK_KHR_wayland_surface", "Wayland"},
+#endif
+        };
+
+        std::string window_system_extension_names()
+        {
+            std::string names;
+            for (const WindowSystemExtension &window_system : window_system_extensions)
+                names += names.empty() ? window_system.name : fmt::format(", {}", window_system.name);
+            return names;
+        }
+
         bool has_layer(const std::vector<VkLayerProperties> &layers, const char *name)
         {
             for (const VkLayerProperties &layer : layers)
@@ -121,25 +147,31 @@ namespace Lmao::Rhi::Vulkan
         std::vector<const char *> enabled_layers;
         std::vector<const char *> enabled_extensions;
 
-        // Surface extensions are required: the RHI presents to windows.
-        // TODO(M1): Linux surface extensions (VK_KHR_xlib_surface / VK_KHR_wayland_surface).
-        const char *surface_extensions[] = {
-            VK_KHR_SURFACE_EXTENSION_NAME,
-#if defined(_WIN32)
-            VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
-#endif
-        };
-        for (const char *name : surface_extensions)
-        {
-            if (!HasExtension(extensions, name))
-            {
-                LMAO_LOG_ERROR(LogChannel(), "Required instance extension {} is not supported", name);
-                return nullptr;
-            }
-            enabled_extensions.push_back(name);
-        }
-
         auto instance = std::unique_ptr<Instance>(new Instance());
+
+        // The RHI presents to windows: VK_KHR_surface plus at least one window-system extension.
+        if (!HasExtension(extensions, VK_KHR_SURFACE_EXTENSION_NAME))
+        {
+            LMAO_LOG_ERROR(LogChannel(), "Required instance extension {} is not supported", VK_KHR_SURFACE_EXTENSION_NAME);
+            return nullptr;
+        }
+        enabled_extensions.push_back(VK_KHR_SURFACE_EXTENSION_NAME);
+
+        std::string window_systems;
+        for (const WindowSystemExtension &window_system : window_system_extensions)
+        {
+            if (!HasExtension(extensions, window_system.name))
+                continue;
+            enabled_extensions.push_back(window_system.name);
+            instance->mWindowTypes |= WindowTypeBit(window_system.type);
+            window_systems += window_systems.empty() ? window_system.label : fmt::format(", {}", window_system.label);
+        }
+        if (window_systems.empty())
+        {
+            LMAO_LOG_ERROR(LogChannel(), "No window-system surface extension is supported (need one of: {})",
+                           window_system_extension_names());
+            return nullptr;
+        }
         instance->mMessengerState.BreakOnError = desc.BreakOnValidationError;
 
         // Optional: object names and labels for RenderDoc, and the messenger below.
@@ -191,8 +223,8 @@ namespace Lmao::Rhi::Vulkan
                    "vkCreateDebugUtilsMessengerEXT"))
             return nullptr;
 
-        LMAO_LOG_INFO(LogChannel(), "Vulkan instance created (loader {}, validation {})", VersionToString(loader_version),
-                      instance->mValidationEnabled ? "on" : "off");
+        LMAO_LOG_INFO(LogChannel(), "Vulkan instance created (loader {}, validation {}, surfaces: {})",
+                      VersionToString(loader_version), instance->mValidationEnabled ? "on" : "off", window_systems);
         return instance;
     }
 

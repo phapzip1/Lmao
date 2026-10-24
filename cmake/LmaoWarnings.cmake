@@ -5,6 +5,12 @@ function(lmao_set_warnings target)
         target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8)
     else()
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            # GCC also fires this for designated initializers, where omitted members are
+            # zero-initialized by definition: VkFooCreateInfo{.sType = ..., .x = ...}.
+            # Clang and MSVC don't warn there, and the idiom is used throughout the Vulkan backend.
+            target_compile_options(${target} PRIVATE -Wno-missing-field-initializers)
+        endif()
     endif()
     # Applies /WX or -Werror; turn off with `cmake --compile-no-warning-as-error`
     set_target_properties(${target} PROPERTIES COMPILE_WARNING_AS_ERROR ON)
