@@ -11,3 +11,4 @@
 | volk | https://github.com/zeux/volk | vulkan-sdk-1.4.363.0 | MIT |
 | cgltf | https://github.com/jkuhlmann/cgltf | v1.15 | MIT |
 | stb | https://github.com/nothings/stb | 2c980bb (no release tags) | MIT or public domain |
+| Dear ImGui | https://github.com/ocornut/imgui | v1.92.9b-docking | MIT |

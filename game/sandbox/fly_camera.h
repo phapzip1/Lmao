@@ -29,6 +29,7 @@ namespace Sandbox
         }
 
         void SetSpeed(float units_per_second) { mSpeed = units_per_second; }
+        float GetSpeed() const { return mSpeed; }
 
         void OnEvent(const Event &event, Window &window)
         {

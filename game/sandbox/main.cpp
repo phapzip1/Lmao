@@ -6,7 +6,8 @@
 // constants), depth-tested with reverse-Z. Without a model it draws a spinning textured cube
 // with a translucent triangle on top. Logs every input event and marks frames for Tracy.
 //
-// Esc closes the window; V toggles vsync; M logs GPU memory usage.
+// Esc closes the window; V toggles vsync; M logs GPU memory usage; F1 toggles the debug panel
+// (Dear ImGui through the RHI: frame time, GPU, swapchain, memory, uploads, camera).
 // Camera: hold the right mouse button to look, WASD / Q / E to move, Shift faster, wheel for speed.
 //
 //   lmao_sandbox [--model <file.gltf|.glb>] [--gpu-validation]
@@ -20,6 +21,7 @@
 #include "core/platform/time.h"
 #include "core/profile/profile.h"
 #include "fly_camera.h"
+#include "render/imgui/imgui_backend.h"
 #include "resource/gltf_loader.h"
 #include "rhi/device.h"
 #include "shaders/cube.spv.h"
@@ -261,6 +263,86 @@ namespace
         gpu = {};
     }
 
+    // Recent frame times for the panel's graph.
+    struct FrameHistory
+    {
+        std::array<float, 240> Milliseconds{};
+        size_t Next = 0;
+        void Add(float ms) { Milliseconds[Next++ % Milliseconds.size()] = ms; }
+    };
+
+    struct PanelState
+    {
+        bool Visible = true;
+        bool VSync = true;
+        bool ShowDemo = false;
+    };
+
+    void draw_debug_panel(PanelState &state, const FrameHistory &history, Rhi::Device &device, Rhi::Swapchain &swapchain,
+                          const Sandbox::FlyCamera &camera, const std::optional<Resource::Model> &model, size_t mesh_count)
+    {
+        if (!state.Visible)
+            return;
+        ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowBgAlpha(0.85f);
+        if (ImGui::Begin("Lmao debug", &state.Visible, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            // Frame time: average over the history, with a graph.
+            float sum = 0.0f, worst = 0.0f;
+            for (float ms : history.Milliseconds)
+            {
+                sum += ms;
+                worst = std::max(worst, ms);
+            }
+            const float average = sum / static_cast<float>(history.Milliseconds.size());
+            ImGui::Text("Frame %.2f ms (%.0f FPS), worst %.2f ms", average, average > 0.0f ? 1000.0f / average : 0.0f, worst);
+            ImGui::PlotLines("##frame times", history.Milliseconds.data(), static_cast<int>(history.Milliseconds.size()),
+                             static_cast<int>(history.Next % history.Milliseconds.size()), nullptr, 0.0f,
+                             std::max(worst, 1.0f), ImVec2(320, 60));
+
+            const Rhi::AdapterInfo &gpu = device.GetAdapterInfo();
+            if (ImGui::CollapsingHeader("GPU", ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                ImGui::Text("%s (%s)", gpu.Name.c_str(), std::string(Rhi::ToString(gpu.Type)).c_str());
+                ImGui::Text("%s %s, driver %s", std::string(Rhi::ToString(device.GetBackend())).c_str(),
+                            gpu.ApiVersion.c_str(), gpu.Driver.c_str());
+            }
+            if (ImGui::CollapsingHeader("Swapchain", ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                const UVec2 size = swapchain.GetSize();
+                ImGui::Text("%u x %u, %s, %u images", size.x, size.y, std::string(Rhi::ToString(swapchain.GetFormat())).c_str(),
+                            swapchain.GetImageCount());
+                if (ImGui::Checkbox("VSync (V)", &state.VSync))
+                    swapchain.SetVSync(state.VSync);
+            }
+            if (ImGui::CollapsingHeader("Memory", ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                const Rhi::MemoryStats stats = device.GetMemoryStats();
+                constexpr double mib = 1024.0 * 1024.0;
+                ImGui::Text("%u allocations, %.1f MiB used, %.1f MiB reserved", stats.AllocationCount,
+                            stats.AllocatedBytes / mib, stats.ReservedBytes / mib);
+                ImGui::Text("Device-local: %.1f of %.1f MiB budget", stats.DeviceLocalUsage / mib, stats.DeviceLocalBudget / mib);
+                const double budget = static_cast<double>(stats.DeviceLocalBudget);
+                ImGui::ProgressBar(budget > 0.0 ? static_cast<float>(stats.DeviceLocalUsage / budget) : 0.0f, ImVec2(320, 0));
+                ImGui::Text("Queued uploads: %.1f MiB", device.GetPendingUploadBytes() / mib);
+            }
+            if (ImGui::CollapsingHeader("Scene", ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                if (model)
+                    ImGui::Text("%s: %zu meshes, %zu materials", model->Name.c_str(), mesh_count, model->Materials.size());
+                else
+                    ImGui::TextUnformatted("No model (cube)");
+                const Vec3 &p = camera.GetPosition();
+                ImGui::Text("Camera (%.2f, %.2f, %.2f), speed %.2f/s", p.x, p.y, p.z, camera.GetSpeed());
+                ImGui::TextDisabled("Hold RMB to look, WASD/QE to move, Shift faster, wheel for speed");
+            }
+            ImGui::Checkbox("ImGui demo window", &state.ShowDemo);
+        }
+        ImGui::End();
+        if (state.ShowDemo)
+            ImGui::ShowDemoWindow(&state.ShowDemo);
+    }
+
     // 256x256 RGBA8, 32-texel checks.
     std::vector<uint32_t> make_checkerboard()
     {
@@ -383,6 +465,12 @@ int main(int argc, char **argv)
         if (!cube || !triangle || !model_pipeline || !model_double_sided)
             return 1;
 
+        auto imgui = Render::ImGuiBackend::Create(*device, swapchain->GetFormat(), window->GetContentScale().x);
+        if (!imgui)
+            return 1;
+        PanelState panel{.VSync = vsync};
+        FrameHistory frame_history;
+
         // Recreated whenever the swapchain changes size (deferred destruction keeps the old one
         // alive until frames using it are done).
         Rhi::TextureHandle depth;
@@ -464,18 +552,38 @@ int main(int argc, char **argv)
             for (const Event &event : platform->GetEvents())
             {
                 log_event(event, *window);
-                camera.OnEvent(event, *window);
+                imgui->ProcessEvent(event, *window);
+
+                // The UI gets the mouse while the cursor is over it and key presses while it has
+                // focus. Releases always reach the camera, so nothing stays held.
+                const bool captured = window->GetCursorMode() == CursorMode::Captured;
+                const bool ui_mouse = imgui->WantsMouse() && !captured;
+                bool to_camera = true;
+                if (std::holds_alternative<MouseMoveEvent>(event.Data) || std::holds_alternative<MouseScrollEvent>(event.Data))
+                    to_camera = !ui_mouse;
+                else if (const auto *button = std::get_if<MouseButtonEvent>(&event.Data))
+                    to_camera = !button->Pressed || !ui_mouse;
+                else if (const auto *key = std::get_if<KeyEvent>(&event.Data))
+                    to_camera = key->Action == KeyAction::Release || !imgui->WantsKeyboard();
+                if (to_camera)
+                    camera.OnEvent(event, *window);
+                // Sandbox shortcuts, unless the UI is taking the keyboard (e.g. typing in a field).
+                const bool shortcuts = !imgui->WantsKeyboard();
+                if (const auto *key = std::get_if<KeyEvent>(&event.Data);
+                    shortcuts && key && key->Code == Key::F1 && key->Action == KeyAction::Press)
+                    panel.Visible = !panel.Visible;
                 if (const auto *resize = std::get_if<FramebufferResizeEvent>(&event.Data))
                     swapchain->Resize(resize->Width, resize->Height);
                 if (const auto *key = std::get_if<KeyEvent>(&event.Data);
-                    key && key->Code == Key::V && key->Action == KeyAction::Press)
+                    shortcuts && key && key->Code == Key::V && key->Action == KeyAction::Press)
                 {
                     vsync = !vsync;
+                    panel.VSync = vsync;
                     swapchain->SetVSync(vsync);
                     LMAO_INFO("VSync {}", vsync ? "on" : "off");
                 }
                 if (const auto *key = std::get_if<KeyEvent>(&event.Data);
-                    key && key->Code == Key::M && key->Action == KeyAction::Press)
+                    shortcuts && key && key->Code == Key::M && key->Action == KeyAction::Press)
                 {
                     const Rhi::MemoryStats stats = device->GetMemoryStats();
                     LMAO_INFO("GPU memory: {} allocations, {:.1f} MiB allocated, {:.1f} MiB reserved; "
@@ -486,6 +594,7 @@ int main(int argc, char **argv)
             }
 
             const double delta_time = frame_timer.Lap();
+            frame_history.Add(static_cast<float>(delta_time * 1000.0));
             camera.Update(static_cast<float>(delta_time));
             if (Rhi::CommandList *commands = device->BeginFrame(*swapchain))
             {
@@ -595,6 +704,11 @@ int main(int argc, char **argv)
                 }
                 commands->EndRendering();
                 commands->EndMarker();
+
+                imgui->NewFrame(*window, static_cast<float>(delta_time));
+                draw_debug_panel(panel, frame_history, *device, *swapchain, camera, model, gpu_model.Meshes.size());
+                vsync = panel.VSync; // the checkbox may have changed it
+                imgui->Render(*commands, swapchain->GetCurrentTexture());
                 device->EndFrame();
             }
 

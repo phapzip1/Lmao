@@ -92,4 +92,19 @@ target_include_directories(cgltf SYSTEM INTERFACE cgltf)
 add_library(stb INTERFACE)
 target_include_directories(stb SYSTEM INTERFACE stb)
 
-tp_folder(glfw TracyClient spdlog volk)
+# --- Dear ImGui, docking branch (MIT) -------------------------------------------
+# No CMake: the core files as a static library. Platform/renderer backends from imgui/backends
+# are not used; the engine's own (engine/render/imgui/) goes through the RHI and platform events.
+add_library(imgui STATIC
+    imgui/imgui.cpp
+    imgui/imgui_demo.cpp
+    imgui/imgui_draw.cpp
+    imgui/imgui_tables.cpp
+    imgui/imgui_widgets.cpp)
+target_include_directories(imgui SYSTEM PUBLIC imgui)
+target_compile_definitions(imgui PUBLIC
+    IMGUI_DISABLE_OBSOLETE_FUNCTIONS
+    # ImTextureID is a bindless index, and index 0 (the device fallback texture) is valid.
+    "ImTextureID_Invalid=((ImTextureID)-1)")
+
+tp_folder(glfw TracyClient spdlog volk imgui)

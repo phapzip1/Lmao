@@ -115,7 +115,8 @@ namespace Lmao::Rhi
                           uint32_t first_instance = 0) = 0;
 
         // Needs BufferUsage::Index. Vertex data is still pulled from bindless buffers in the
-        // shader; SV_VertexID is the index value (plus vertex_offset).
+        // shader. SV_VertexID is the index value *without* vertex_offset (Slang lowers it to
+        // gl_VertexIndex - gl_BaseVertex), so pass a base vertex in push constants instead.
         virtual void BindIndexBuffer(BufferHandle buffer, IndexType type = IndexType::UInt32, uint64_t offset = 0) = 0;
         virtual void DrawIndexed(uint32_t index_count, uint32_t instance_count = 1, uint32_t first_index = 0,
                                  int32_t vertex_offset = 0, uint32_t first_instance = 0) = 0;
