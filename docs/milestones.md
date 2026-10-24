@@ -75,11 +75,13 @@ Rules:
 - [ ] VMA, staging uploads, bindless descriptors
 - [ ] glTF model rendered with textures, camera and depth (reverse-Z)
 - [ ] ImGui through the RHI
-- [ ] Slang shaders with the fixed binding convention; shader hot reload
+- [x] Slang shaders with the fixed binding convention; shader hot reload. `Render::PipelineLibrary` polls `.slang` modification times twice a second, reruns slangc in the background with the build's flags and swaps pipelines behind the same handles. Imports are tracked through the depfile. A compile error keeps the old pipeline and logs file:line. Off in Release / `LMAO_SHADER_HOT_RELOAD=OFF`. Tested on Linux: edit, syntax error, fix, edit of `common/bindless.slang` (~0.5 s per reload, no validation messages). Windows run still pending, 2026-10-24 (decision 0011)
 - [x] Pipeline cache persisted to disk. `VkPipelineCache` loaded at device creation and saved at shutdown to `GetUserCacheDirectory("Lmao")`, one file per GPU. Header checked for vendor, device and `pipelineCacheUUID`, and stale, truncated or wrong-GPU files are dropped with a logged reason. Hits counted via creation feedback: second run 5/5 hits, Cube pipeline 17.8 ms → 0.02 ms (Linux, Mesa cache off). Windows run still pending, 2026-10-24
 - [ ] Null backend runs the same frame headless
 
 *Follow-ups from M2 work (not exit criteria):*
+- The ImGui backend creates its pipeline on the device directly, so `imgui.slang` doesn't hot reload; route it through a `PipelineLibrary` once the renderer owns one.
+- Hot reload compiles each source on its own `std::async` thread; move it to the job system (M3). If ~0.5 s per reload gets annoying, compile in-process with the Slang library (decision 0011, alternatives).
 - ~~Uploads only work inside a frame~~ Queued uploads (`Device::QueueUpload` / `QueueGenerateMips`) can be made any time and are recorded at the start of later frames within `DeviceDesc::UploadBudgetPerFrame` (16 MiB), split into byte ranges / row bands: no single-frame stall, staging bounded by the upload ring. `IsUploadPending` / `GetTextureIndex(texture, placeholder)` let the renderer skip meshes and show placeholders until data arrives. Still frame-bound and main-thread only: loader threads (M3) and the transfer queue (M12) remain.
 
 **M3 — Memory + jobs**

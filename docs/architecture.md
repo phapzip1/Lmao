@@ -148,7 +148,7 @@ std::unique_ptr<Device> createDevice(Backend, const DeviceCreateInfo&);
 - Later: GPU-driven rendering (mega-buffers, compute culling, `vkCmdDrawIndexedIndirectCount`).
 
 ## Shaders
-Slang, compiled offline by the cooker to SPIR-V, DXIL, MSL, GLSL or WGSL per backend; runtime compilation only for hot reload. Fixed binding convention:
+Slang, compiled offline by the cooker to SPIR-V, DXIL, MSL, GLSL or WGSL per backend; runtime compilation only for hot reload. Today `lmao_add_shaders` compiles at build time and embeds the SPIR-V. In development builds (`LMAO_SHADER_HOT_RELOAD`, never Release), `Render::PipelineLibrary` polls the `.slang` files twice a second, reruns slangc on a background thread with the build's flags and swaps changed pipelines in behind the same handles (`Device::ReplacePipeline`); see [decisions/0011](decisions/0011-shader-hot-reload.md). Fixed binding convention:
 
 | Slot | Contents | Vulkan | D3D12 | Metal |
 |---|---|---|---|---|

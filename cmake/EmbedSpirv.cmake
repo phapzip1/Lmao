@@ -1,5 +1,6 @@
-# cmake -DINPUT=<file.spv> -DOUTPUT=<file.h> -DNAME=<ArrayName> -P EmbedSpirv.cmake
-# Writes the SPIR-V module as an inline constexpr uint32_t array (little-endian words).
+# cmake -DINPUT=<file.spv> -DOUTPUT=<file.h> -DNAME=<ArrayName> -DSOURCE=<file.slang> -P EmbedSpirv.cmake
+# Writes the SPIR-V module as an inline constexpr uint32_t array (little-endian words), plus
+# the source path for shader hot reload.
 
 file(READ "${INPUT}" hex HEX)
 string(LENGTH "${hex}" length)
@@ -19,11 +20,20 @@ file(WRITE "${OUTPUT}"
 #pragma once
 
 #include <cstdint>
+#include <string_view>
 
 namespace Lmao::Shaders
 {
     inline constexpr uint32_t ${NAME}[] = {
         ${words}
     };
+
+    // What Render::PipelineLibrary recompiles when it changes. Empty in builds without hot
+    // reload, so shipping binaries don't carry development paths.
+#if LMAO_SHADER_HOT_RELOAD
+    inline constexpr std::string_view ${NAME}Source = \"${SOURCE}\";
+#else
+    inline constexpr std::string_view ${NAME}Source;
+#endif
 } // namespace Lmao::Shaders
 ")

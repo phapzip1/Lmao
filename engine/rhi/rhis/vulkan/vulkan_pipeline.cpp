@@ -127,7 +127,7 @@ namespace Lmao::Rhi::Vulkan
 
     } // namespace
 
-    PipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc &desc)
+    VkPipeline VulkanDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc)
     {
         LMAO_PROFILE_ZONE();
         const std::string name = desc.DebugName.empty() ? std::string("Unnamed pipeline") : std::string(desc.DebugName);
@@ -288,11 +288,34 @@ namespace Lmao::Rhi::Vulkan
         if (pipeline == VK_NULL_HANDLE)
         {
             LMAO_LOG_ERROR(LogChannel(), "Failed to create pipeline '{}'", name);
-            return {};
+            return VK_NULL_HANDLE;
         }
         SetName(VK_OBJECT_TYPE_PIPELINE, pipeline, name.c_str());
         LMAO_LOG_DEBUG(LogChannel(), "Created pipeline '{}'{}", name, cache_note);
+        return pipeline;
+    }
+
+    PipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc &desc)
+    {
+        const VkPipeline pipeline = create_graphics_pipeline(desc);
+        if (pipeline == VK_NULL_HANDLE)
+            return {};
         return mPipelines.Insert({pipeline});
+    }
+
+    bool VulkanDevice::ReplacePipeline(PipelineHandle handle, const GraphicsPipelineDesc &desc)
+    {
+        Pipeline *existing = mPipelines.Get(handle);
+        LMAO_ASSERT(existing, "ReplacePipeline: stale or invalid handle");
+        if (!existing)
+            return false;
+        const VkPipeline pipeline = create_graphics_pipeline(desc);
+        if (pipeline == VK_NULL_HANDLE)
+            return false;
+        // BindPipeline looks the VkPipeline up when recording, so later commands get the new one.
+        defer_destroy({.pipeline = existing->Handle});
+        existing->Handle = pipeline;
+        return true;
     }
 
     void VulkanDevice::DestroyPipeline(PipelineHandle handle)

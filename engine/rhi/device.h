@@ -141,6 +141,10 @@ namespace Lmao::Rhi
         // Safe to call while frames using the pipeline are in flight: destruction is deferred
         // until the GPU is done with them.
         virtual void DestroyPipeline(PipelineHandle pipeline) = 0;
+        // Builds a new pipeline from desc and swaps it in behind the same handle (shader hot
+        // reload); the old one is destroyed once the GPU is done with it. Commands already
+        // recorded keep the old pipeline. false on failure: the old pipeline stays (reason logged).
+        virtual bool ReplacePipeline(PipelineHandle pipeline, const GraphicsPipelineDesc &desc) = 0;
 
         // Waits until the GPU is done with the frame slot being reused, acquires the swapchain's
         // next image and starts recording. nullptr means "skip this frame" (minimized, or the

@@ -7,11 +7,25 @@
 #
 #   #include "shaders/triangle.spv.h"   // from shaders/triangle.slang
 #   Lmao::Shaders::Triangle             // inline constexpr uint32_t[] (SPIR-V words)
+#   Lmao::Shaders::TriangleSource       // the .slang path for hot reload; "" without LMAO_SHADER_HOT_RELOAD
 #
 # The array name is the file name in PascalCase (my_shader.slang -> MyShader).
 # slangc comes from tools/bin/slang (scripts/setup.sh / setup.ps1), or LMAO_SLANGC if set.
 
 set(LMAO_SLANGC "" CACHE FILEPATH "Path to slangc; empty = tools/bin/slang/bin/slangc")
+
+# Shared by build-time compiles and runtime hot reload (lmao_render's PipelineLibrary), so a
+# reloaded shader is compiled exactly like the embedded one. Build type flags (-g -O0 / -O2) and
+# the include directory are added by each.
+set(LMAO_SLANGC_FLAGS
+    -target spirv -profile spirv_1_6
+    -fvk-use-entrypoint-name    # keep vertexMain/fragmentMain as SPIR-V entry names
+    -matrix-layout-column-major # matches glm and the engine convention
+    -warnings-as-errors all
+    -warnings-disable 41012     # "profile implicitly upgraded": Texture2D lists optional
+                                # capabilities; only the ones used are emitted
+)
+set(LMAO_SHADER_INCLUDE_DIR "${PROJECT_SOURCE_DIR}/shaders") # import common.bindless;
 
 function(lmao_find_slangc out_var)
     if(LMAO_SLANGC)
@@ -57,17 +71,12 @@ function(lmao_add_shaders target)
             OUTPUT "${spv}" "${header}" # spv first: slangc's depfile names it as the target
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${generated_dir}/shaders"
             COMMAND "${slangc}" "${source_path}"
-                    -target spirv -profile spirv_1_6
-                    -fvk-use-entrypoint-name    # keep vertexMain/fragmentMain as SPIR-V entry names
-                    -matrix-layout-column-major # matches glm and the engine convention
-                    -warnings-as-errors all
-                    -warnings-disable 41012     # "profile implicitly upgraded": Texture2D lists optional
-                                                # capabilities; only the ones used are emitted
-                    -I "${PROJECT_SOURCE_DIR}/shaders" # import common.bindless;
+                    ${LMAO_SLANGC_FLAGS}
+                    -I "${LMAO_SHADER_INCLUDE_DIR}"
                     "$<IF:$<CONFIG:Debug>,-g;-O0,-O2>" # -g: source-level debugging in RenderDoc
                     -depfile "${spv}.d"
                     -o "${spv}"
-            COMMAND "${CMAKE_COMMAND}" -DINPUT=${spv} -DOUTPUT=${header} -DNAME=${array_name}
+            COMMAND "${CMAKE_COMMAND}" -DINPUT=${spv} -DOUTPUT=${header} -DNAME=${array_name} -DSOURCE=${source_path}
                     -P "${PROJECT_SOURCE_DIR}/cmake/EmbedSpirv.cmake"
             MAIN_DEPENDENCY "${source_path}"
             DEPENDS "${PROJECT_SOURCE_DIR}/cmake/EmbedSpirv.cmake"

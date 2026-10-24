@@ -132,6 +132,7 @@ namespace Lmao::Rhi::Vulkan
         uint64_t GetPendingUploadBytes() const override { return mQueuedBytes; }
         PipelineHandle CreateGraphicsPipeline(const GraphicsPipelineDesc &desc) override;
         void DestroyPipeline(PipelineHandle pipeline) override;
+        bool ReplacePipeline(PipelineHandle pipeline, const GraphicsPipelineDesc &desc) override;
         using Device::BeginFrame;
         CommandList *BeginFrame(std::span<Swapchain *const> swapchains) override;
         void EndFrame() override;
@@ -239,6 +240,7 @@ namespace Lmao::Rhi::Vulkan
         // a zeroed buffer and a linear sampler. Every slot starts out (and ends up, when freed)
         // pointing at them, so no index ever reads an undefined descriptor.
         bool create_fallbacks();
+        VkPipeline create_graphics_pipeline(const GraphicsPipelineDesc &desc); // VK_NULL_HANDLE on failure (logged)
         bool create_pipeline_cache(std::string_view directory, const VkPhysicalDeviceProperties &properties);
         void save_pipeline_cache(); // logs the hit count; writes the file if there is a path
         void point_slots_at_fallback(uint32_t binding, uint32_t first, uint32_t count);

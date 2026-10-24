@@ -25,6 +25,7 @@
 #include "core/profile/profile.h"
 #include "fly_camera.h"
 #include "render/imgui/imgui_backend.h"
+#include "render/pipeline_library.h"
 #include "resource/gltf_loader.h"
 #include "rhi/device.h"
 #include "shaders/cube.spv.h"
@@ -284,8 +285,8 @@ namespace
     };
 
     void draw_debug_panel(PanelState &state, const FrameHistory &history, const Platform &platform,
-                          const Render::ImGuiBackend &imgui, Rhi::Device &device, Rhi::Swapchain &swapchain,
-                          const Sandbox::FlyCamera &camera, const std::optional<Resource::Model> &model, size_t mesh_count)
+                          const Render::ImGuiBackend &imgui, const Render::PipelineLibrary &pipelines,
+                          Rhi::Device &device, Rhi::Swapchain &swapchain, const Sandbox::FlyCamera &camera, const std::optional<Resource::Model> &model, size_t mesh_count)
     {
         if (!state.Visible)
             return;
@@ -331,6 +332,10 @@ namespace
                 const double budget = static_cast<double>(stats.DeviceLocalBudget);
                 ImGui::ProgressBar(budget > 0.0 ? static_cast<float>(stats.DeviceLocalUsage / budget) : 0.0f, ImVec2(320, 0));
                 ImGui::Text("Queued uploads: %.1f MiB", device.GetPendingUploadBytes() / mib);
+                if (pipelines.IsHotReloadEnabled())
+                    ImGui::Text("Shader hot reload: on (edit shaders/*.slang), %u reload(s)", pipelines.GetReloadCount());
+                else
+                    ImGui::TextDisabled("Shader hot reload: off (Release build or LMAO_SHADER_HOT_RELOAD=OFF)");
             }
             if (ImGui::CollapsingHeader("Scene", ImGuiTreeNodeFlags_DefaultOpen))
             {
@@ -462,17 +467,19 @@ int main(int argc, char **argv)
 
         constexpr Rhi::Format depth_format = Rhi::Format::D32Float;
         const Rhi::Format color_formats[] = {swapchain->GetFormat()};
+        // Pipelines are rebuilt in place when their .slang file changes (development builds).
+        Render::PipelineLibrary pipelines(*device);
         const auto cube_code = std::as_bytes(std::span(Shaders::Cube));
-        const Rhi::PipelineHandle cube = device->CreateGraphicsPipeline({
+        const Rhi::PipelineHandle cube = pipelines.CreateGraphicsPipeline({
             .Vertex = {.Code = cube_code, .EntryPoint = "vertexMain"},
             .Fragment = {.Code = cube_code, .EntryPoint = "fragmentMain"},
             .ColorFormats = color_formats,
             .DepthFormat = depth_format, // default depth state: test + write, GREATER (reverse-Z)
             .DebugName = "Cube",
-        });
+        }, Shaders::CubeSource);
         const Rhi::BlendState overlay_blend[] = {Rhi::BlendState::AlphaBlend()};
         const auto triangle_code = std::as_bytes(std::span(Shaders::Triangle));
-        const Rhi::PipelineHandle triangle = device->CreateGraphicsPipeline({
+        const Rhi::PipelineHandle triangle = pipelines.CreateGraphicsPipeline({
             .Vertex = {.Code = triangle_code, .EntryPoint = "vertexMain"},
             .Fragment = {.Code = triangle_code, .EntryPoint = "fragmentMain"},
             .ColorFormats = color_formats,
@@ -480,7 +487,7 @@ int main(int argc, char **argv)
             .DepthFormat = depth_format, // same pass as the cube, but drawn on top of everything
             .Depth = {.TestEnable = false, .WriteEnable = false},
             .DebugName = "Triangle overlay",
-        });
+        }, Shaders::TriangleSource);
         const auto model_code = std::as_bytes(std::span(Shaders::Model));
         Rhi::GraphicsPipelineDesc model_desc{
             .Vertex = {.Code = model_code, .EntryPoint = "vertexMain"},
@@ -489,10 +496,10 @@ int main(int argc, char **argv)
             .DepthFormat = depth_format,
             .DebugName = "Model",
         };
-        const Rhi::PipelineHandle model_pipeline = device->CreateGraphicsPipeline(model_desc);
+        const Rhi::PipelineHandle model_pipeline = pipelines.CreateGraphicsPipeline(model_desc, Shaders::ModelSource);
         model_desc.Cull = Rhi::CullMode::None;
         model_desc.DebugName = "Model (double-sided)";
-        const Rhi::PipelineHandle model_double_sided = device->CreateGraphicsPipeline(model_desc);
+        const Rhi::PipelineHandle model_double_sided = pipelines.CreateGraphicsPipeline(model_desc, Shaders::ModelSource);
         if (!cube || !triangle || !model_pipeline || !model_double_sided)
             return 1;
 
@@ -584,6 +591,7 @@ int main(int argc, char **argv)
                 platform->WaitEvents();
             else
                 platform->PollEvents();
+            pipelines.Update();
 
             for (const Event &event : platform->GetEvents())
             {
@@ -637,7 +645,7 @@ int main(int argc, char **argv)
 
             // UI first: ending the ImGui frame may open or close viewport windows (and their swapchains).
             imgui->NewFrame(static_cast<float>(delta_time));
-            draw_debug_panel(panel, frame_history, *platform, *imgui, *device, *swapchain, camera, model, gpu_model.Meshes.size());
+            draw_debug_panel(panel, frame_history, *platform, *imgui, pipelines, *device, *swapchain, camera, model, gpu_model.Meshes.size());
             vsync = panel.VSync; // the checkbox may have changed it
             imgui->EndFrame();
 
@@ -766,18 +774,14 @@ int main(int argc, char **argv)
 
         destroy_gpu_model(*device, gpu_model);
         device->DestroyTexture(white);
-        device->DestroyPipeline(model_pipeline);
-        device->DestroyPipeline(model_double_sided);
         if (depth)
             device->DestroyTexture(depth);
         device->DestroyBuffer(cube_indices);
         device->DestroyBuffer(cube_vertices);
-        device->DestroyPipeline(cube);
         device->DestroySampler(sampler);
         device->DestroyTexture(checkerboard);
         device->DestroyBuffer(vertex_buffer);
-        device->DestroyPipeline(triangle);
-    } // swapchain, device, window, then platform destroyed here (reverse order of creation)
+    } // pipelines (the library destroys its own), swapchain, device, window, then platform destroyed here (reverse order of creation)
 
     LMAO_INFO("Bye");
     Log::Shutdown();

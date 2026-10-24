@@ -13,6 +13,7 @@ add_library(lmao_core STATIC
     platform/input.h
     platform/input.cpp
     platform/paths.h
+    platform/process.h
     platform/platform.h
     platform/time.h
     platform/window.h
@@ -26,12 +27,14 @@ add_library(Lmao::core ALIAS lmao_core)
 if(WIN32)
     target_sources(lmao_core PRIVATE
         platform/platforms/win32/crash_handler_win32.cpp
-        platform/platforms/win32/paths_win32.cpp)
+        platform/platforms/win32/paths_win32.cpp
+        platform/platforms/win32/process_win32.cpp)
     target_link_libraries(lmao_core PRIVATE dbghelp shell32 ole32) # ole32: CoTaskMemFree
 else()
     target_sources(lmao_core PRIVATE
         platform/platforms/posix/crash_handler_posix.cpp
-        platform/platforms/posix/paths_posix.cpp)
+        platform/platforms/posix/paths_posix.cpp
+        platform/platforms/posix/process_posix.cpp)
 endif()
 
 # Headers are included as "core/<module>/<file>.h".
@@ -42,11 +45,14 @@ target_link_libraries(lmao_core
     PRIVATE glfw) # GLFW stays inside platform/platforms/glfw/; nothing public exposes it
 
 option(LMAO_ASSERTS_IN_RELEASE "Keep LMAO_ASSERT checks in non-Debug builds" OFF)
+# Release builds never hot reload: they use only the SPIR-V embedded at build time.
+option(LMAO_SHADER_HOT_RELOAD "Recompile changed Slang shaders at runtime (never in Release)" ON)
 
 target_compile_definitions(lmao_core PUBLIC
     # Strip log calls below this level at compile time.
     SPDLOG_ACTIVE_LEVEL=$<IF:$<CONFIG:Debug>,SPDLOG_LEVEL_TRACE,SPDLOG_LEVEL_INFO>
-    LMAO_ASSERTS_ENABLED=$<IF:$<OR:$<CONFIG:Debug>,$<BOOL:${LMAO_ASSERTS_IN_RELEASE}>>,1,0>)
+    LMAO_ASSERTS_ENABLED=$<IF:$<OR:$<CONFIG:Debug>,$<BOOL:${LMAO_ASSERTS_IN_RELEASE}>>,1,0>
+    LMAO_SHADER_HOT_RELOAD=$<IF:$<AND:$<BOOL:${LMAO_SHADER_HOT_RELOAD}>,$<NOT:$<CONFIG:Release>>>,1,0>)
 
 # Assert macros use __VA_OPT__, which needs MSVC's conforming preprocessor.
 if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
