@@ -56,6 +56,10 @@ namespace Lmao::Rhi
         bool EnableValidation = true; // API validation layers: slow, for development only
 #endif
         bool BreakOnValidationError = true; // break into an attached debugger on validation errors
+        // GPU-assisted validation (needs EnableValidation): instruments shaders to catch
+        // out-of-range or destroyed bindless indices and out-of-bounds buffer access. Much slower;
+        // turn on while chasing a bug.
+        bool GpuValidation = false;
     };
 
     class Device

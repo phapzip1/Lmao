@@ -79,6 +79,9 @@ Rules:
 - [ ] Pipeline cache persisted to disk
 - [ ] Null backend runs the same frame headless
 
+*Follow-ups from M2 work (not exit criteria):*
+- Uploads only work inside a frame (`CommandList::Upload*`, per-frame staging ring). glTF loading needs either first-frame uploads or a small startup upload path; decide when loading lands. The real fix is M12's transfer-queue uploads.
+
 **M3 — Memory + jobs**
 - [ ] Frame, pool and TLSF allocators with per-subsystem tracking UI
 - [ ] Work-stealing job system with counters
@@ -92,11 +95,21 @@ Rules:
 - [ ] Asset cooker + asset DB with GUIDs
 - [ ] 10k entities spawned and rendered
 
+*Follow-ups from M2 work (not exit criteria):*
+- Texture compression (BC1–BC7) in the asset cooker. The RHI only has uncompressed formats: `BytesPerTexel` becomes a block size, and `UploadTexture` / `CopyTextureToBuffer` size checks follow.
+
 **M5 — Render graph + lighting**
 - [ ] Render graph with automatic barriers (abstract `ResourceState` only)
 - [ ] PBR, shadow maps, HDR + tonemapping, frustum culling, debug draw
 - [ ] Render graph visualizer
 - [ ] Lit scene at a stable frame rate
+
+*Follow-ups from M2 work (not exit criteria):*
+- The render graph allocates render targets (including depth) per pass and resizes them with the swapchain; today the sandbox recreates its depth buffer by hand.
+- The render graph takes over `RenderingDesc::SampledTextures` and adds per-mip layout tracking (today a whole texture has one layout).
+- Batch barriers and track individual resources instead of the conservative full barriers around every copy.
+- Stencil: a `D32S8` format, stencil state on pipelines and the stencil aspect in transitions, when outlines, decals or light volumes need it.
+- More bindless texture types (cube, array, 3D, integer storage images) as set 0 bindings with fallbacks, before shadow maps and environment maps (decision 0010).
 
 **M5b — D3D12 backend**
 - [ ] Same scenes and shaders render on D3D12
@@ -136,6 +149,9 @@ Rules:
 - [ ] Async IO thread, transfer-queue uploads, LOD/mip streaming, memory budget
 - [ ] Level larger than the VRAM budget loads with no hitch above 2 ms
 
+*Follow-ups from M2 work (not exit criteria):*
+- Transfer-queue uploads replace the in-frame staging ring for streamed data; the ring stays for small per-frame uploads.
+
 **M13 — Networking**
 - [ ] UDP transport with reliability layer
 - [ ] Replication, client-side prediction, interpolation
@@ -150,3 +166,11 @@ Rules:
 - [ ] Scene editor with reflection-driven inspector and gizmos
 - [ ] Play-in-editor
 - [ ] A level can be built without touching code
+
+---
+
+## Unscheduled limitations
+
+Known costs of current decisions that only matter if the engine targets these platforms (decision 0010):
+- **WebGPU** has no bindless arrays: the backend needs a different binding model behind the same Slang helpers.
+- **Mobile GPUs** often lack `vertexPipelineStoresAndAtomics`: split the bindless buffer array into read-only and read-write arrays.

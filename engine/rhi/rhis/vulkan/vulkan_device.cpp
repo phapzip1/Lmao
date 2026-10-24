@@ -52,6 +52,9 @@ namespace Lmao::Rhi::Vulkan
             fn("timelineSemaphore", chain.Vulkan12.timelineSemaphore);
             fn("bufferDeviceAddress", chain.Vulkan12.bufferDeviceAddress);
             fn("samplerAnisotropy", chain.Features2.features.samplerAnisotropy);
+            // The bindless buffer array is read-write (RWByteAddressBuffer) in every stage
+            fn("vertexPipelineStoresAndAtomics", chain.Features2.features.vertexPipelineStoresAndAtomics);
+            fn("fragmentStoresAndAtomics", chain.Features2.features.fragmentStoresAndAtomics);
             // Slang lowers SV_VertexID to gl_VertexIndex - gl_BaseVertex; also SV_DrawIndex later
             fn("shaderDrawParameters", chain.Vulkan11.shaderDrawParameters);
             // Bindless descriptors
@@ -61,7 +64,10 @@ namespace Lmao::Rhi::Vulkan
             fn("descriptorBindingSampledImageUpdateAfterBind", chain.Vulkan12.descriptorBindingSampledImageUpdateAfterBind);
             fn("descriptorBindingStorageImageUpdateAfterBind", chain.Vulkan12.descriptorBindingStorageImageUpdateAfterBind);
             fn("descriptorBindingStorageBufferUpdateAfterBind", chain.Vulkan12.descriptorBindingStorageBufferUpdateAfterBind);
+            fn("descriptorBindingUpdateUnusedWhilePending", chain.Vulkan12.descriptorBindingUpdateUnusedWhilePending);
             fn("shaderSampledImageArrayNonUniformIndexing", chain.Vulkan12.shaderSampledImageArrayNonUniformIndexing);
+            fn("shaderStorageImageArrayNonUniformIndexing", chain.Vulkan12.shaderStorageImageArrayNonUniformIndexing);
+            fn("shaderStorageBufferArrayNonUniformIndexing", chain.Vulkan12.shaderStorageBufferArrayNonUniformIndexing);
         }
 
         struct Adapter
@@ -181,6 +187,7 @@ namespace Lmao::Rhi::Vulkan
                 .ApplicationName = desc.ApplicationName,
                 .EnableValidation = desc.EnableValidation,
                 .BreakOnValidationError = desc.BreakOnValidationError,
+                .GpuValidation = desc.GpuValidation,
             });
             if (!instance)
                 return nullptr;
@@ -280,16 +287,31 @@ namespace Lmao::Rhi::Vulkan
 
     VulkanDevice::~VulkanDevice()
     {
+        vkDeviceWaitIdle(mDevice);
+        mShuttingDown = true;
+        if (mFallbackTexture)
+            DestroyTexture(mFallbackTexture);
+        if (mFallbackBuffer)
+            DestroyBuffer(mFallbackBuffer);
+        if (mFallbackSampler)
+            DestroySampler(mFallbackSampler);
+        destroy_pending(true); // also releases the slots of destroyed resources
         LMAO_ASSERT(mSwapchainCount == 0, "{} swapchain(s) still alive when the device was destroyed", mSwapchainCount);
         LMAO_ASSERT(mTextures.IsEmpty(), "{} texture(s) still alive when the device was destroyed", mTextures.Size());
         LMAO_ASSERT(mPipelines.IsEmpty(), "{} pipeline(s) still alive when the device was destroyed", mPipelines.Size());
         LMAO_ASSERT(mBuffers.IsEmpty(), "{} buffer(s) still alive when the device was destroyed", mBuffers.Size());
         LMAO_ASSERT(mSamplers.IsEmpty(), "{} sampler(s) still alive when the device was destroyed", mSamplers.Size());
-        vkDeviceWaitIdle(mDevice);
-        destroy_pending(true);
         if (mPipelineLayout != VK_NULL_HANDLE)
             vkDestroyPipelineLayout(mDevice, mPipelineLayout, nullptr);
         destroy_frame_resources();
+        if (mFramePool != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(mDevice, mFramePool, nullptr); // frees the per-frame sets
+        if (mBindlessPool != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(mDevice, mBindlessPool, nullptr);
+        if (mFrameLayout != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(mDevice, mFrameLayout, nullptr);
+        if (mBindlessLayout != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(mDevice, mBindlessLayout, nullptr);
         if (mAllocator != VK_NULL_HANDLE)
             vmaDestroyAllocator(mAllocator); // asserts (in VMA) if any allocation leaked
         vkDestroyDevice(mDevice, nullptr);
@@ -304,16 +326,20 @@ namespace Lmao::Rhi::Vulkan
 
     bool VulkanDevice::Initialize(bool memory_budget)
     {
-        VkPhysicalDeviceProperties properties{};
-        vkGetPhysicalDeviceProperties(mPhysicalDevice, &properties);
-        mLimits = properties.limits;
+        VkPhysicalDeviceVulkan12Properties vulkan12{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
+        VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &vulkan12};
+        vkGetPhysicalDeviceProperties2(mPhysicalDevice, &properties);
+        mLimits = properties.properties.limits;
 
-        if (!create_allocator(memory_budget))
+        if (!create_allocator(memory_budget) || !create_descriptors(vulkan12))
             return false;
 
-        const VkPushConstantRange push_constants{.stageFlags = VK_SHADER_STAGE_ALL, .offset = 0, .size = 128};
+        const VkDescriptorSetLayout set_layouts[] = {mBindlessLayout, mFrameLayout};
+        const VkPushConstantRange push_constants{.stageFlags = VK_SHADER_STAGE_ALL, .offset = 0, .size = MaxPushConstantsSize};
         const VkPipelineLayoutCreateInfo layout_info{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = static_cast<uint32_t>(std::size(set_layouts)),
+            .pSetLayouts = set_layouts,
             .pushConstantRangeCount = 1,
             .pPushConstantRanges = &push_constants,
         };
@@ -355,12 +381,34 @@ namespace Lmao::Rhi::Vulkan
             if (!Check(vkCreateSemaphore(mDevice, &semaphore_info, nullptr, &frame.image_acquired), "vkCreateSemaphore"))
                 return false;
 
+            const VkBufferCreateInfo upload_info{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .size = UploadRingSize,
+                .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            };
+            const VmaAllocationCreateInfo upload_allocation_info{
+                .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                .usage = VMA_MEMORY_USAGE_AUTO,
+                .requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            };
+            VmaAllocationInfo upload_mapping{};
+            if (!Check(vmaCreateBuffer(mAllocator, &upload_info, &upload_allocation_info, &frame.upload_buffer,
+                                       &frame.upload_allocation, &upload_mapping),
+                       "vmaCreateBuffer (upload ring)"))
+                return false;
+            frame.upload_data = static_cast<std::byte *>(upload_mapping.pMappedData);
+            if (!create_frame_constants(frame, i))
+                return false;
+
             const std::string prefix = fmt::format("Frame {}", i);
+            SetName(VK_OBJECT_TYPE_BUFFER, frame.upload_buffer, (prefix + " upload ring").c_str());
+            vmaSetAllocationName(mAllocator, frame.upload_allocation, (prefix + " upload ring").c_str());
             SetName(VK_OBJECT_TYPE_COMMAND_POOL, frame.command_pool, (prefix + " command pool").c_str());
             SetName(VK_OBJECT_TYPE_COMMAND_BUFFER, frame.command_buffer, (prefix + " command buffer").c_str());
             SetName(VK_OBJECT_TYPE_SEMAPHORE, frame.image_acquired, (prefix + " image acquired").c_str());
         }
-        return true;
+        return create_fallbacks();
     }
 
     void VulkanDevice::destroy_frame_resources()
@@ -371,6 +419,10 @@ namespace Lmao::Rhi::Vulkan
                 vkDestroySemaphore(mDevice, frame.image_acquired, nullptr);
             if (frame.command_pool != VK_NULL_HANDLE)
                 vkDestroyCommandPool(mDevice, frame.command_pool, nullptr); // frees its command buffer
+            if (frame.upload_buffer != VK_NULL_HANDLE)
+                vmaDestroyBuffer(mAllocator, frame.upload_buffer, frame.upload_allocation);
+            if (frame.constants_buffer != VK_NULL_HANDLE)
+                vmaDestroyBuffer(mAllocator, frame.constants_buffer, frame.constants_allocation);
             frame = {};
         }
         if (mFrameTimeline != VK_NULL_HANDLE)
@@ -429,6 +481,24 @@ namespace Lmao::Rhi::Vulkan
                               vmaDestroyImage(mAllocator, pending.image, pending.allocation);
                           else if (pending.buffer != VK_NULL_HANDLE)
                               vmaDestroyBuffer(mAllocator, pending.buffer, pending.allocation);
+                          // Now no frame can read the old descriptors: point the slots back at the
+                          // fallbacks (a stale index reads magenta / zeros) and let them be reused.
+                          if (pending.texture_slot)
+                          {
+                              point_slots_at_fallback(0, pending.texture_slot.Index, 1);
+                              point_slots_at_fallback(1, pending.texture_slot.Index, 1);
+                              mTextures.Remove(pending.texture_slot);
+                          }
+                          if (pending.buffer_slot)
+                          {
+                              point_slots_at_fallback(2, pending.buffer_slot.Index, 1);
+                              mBuffers.Remove(pending.buffer_slot);
+                          }
+                          if (pending.sampler_slot)
+                          {
+                              point_slots_at_fallback(3, pending.sampler_slot.Index, 1);
+                              mSamplers.Remove(pending.sampler_slot);
+                          }
                           return true;
                       });
     }
@@ -464,6 +534,7 @@ namespace Lmao::Rhi::Vulkan
             return nullptr;
 
         Check(vkResetCommandPool(mDevice, frame.command_pool, 0), "vkResetCommandPool");
+        frame.upload_used = 0; // the GPU has finished the copies that read it
         mCommandList.Begin(frame.command_buffer);
         mFrameSwapchain = &vulkan_swapchain;
         return &mCommandList;
@@ -475,6 +546,7 @@ namespace Lmao::Rhi::Vulkan
         LMAO_ASSERT(mFrameSwapchain != nullptr, "EndFrame without a successful BeginFrame");
         Frame &frame = mFrames[mFrameIndex];
 
+        LMAO_PROFILE_PLOT("Upload ring (KiB)", static_cast<double>(frame.upload_used) / 1024.0);
         mCommandList.TransitionForPresent(mFrameSwapchain->GetCurrentTexture());
         mCommandList.End();
 

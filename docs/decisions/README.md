@@ -13,6 +13,7 @@ One file per decision: context, the decision, and its consequences. A decision i
 | [0007](0007-ecs-and-handles.md) | Sparse-set ECS and generational handles | Accepted | 2026-10-23 |
 | [0008](0008-render-graph-owns-sync.md) | The render graph owns GPU synchronization | Accepted | 2026-10-23 |
 | [0009](0009-opengl-deprioritized.md) | OpenGL is last priority; WebGPU for the web | Accepted | 2026-10-23 |
+| [0010](0010-bindless-descriptors.md) | Bindless descriptors: one global set, indexed by handle | Accepted | 2026-10-24 |
 
 Template:
 

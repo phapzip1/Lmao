@@ -18,6 +18,7 @@ namespace Lmao::Rhi::Vulkan
         std::string_view ApplicationName;
         bool EnableValidation = false;
         bool BreakOnValidationError = true;
+        bool GpuValidation = false; // GPU-assisted validation (gpuav_enable)
     };
 
     constexpr uint32_t WindowTypeBit(NativeWindowType type) { return 1u << static_cast<uint32_t>(type); }

@@ -3,6 +3,7 @@
 add_library(lmao_rhi_vulkan STATIC
     vulkan_common.h
     vulkan_common.cpp
+    vulkan_descriptors.cpp
     vulkan_command_list.h
     vulkan_command_list.cpp
     vulkan_device.h

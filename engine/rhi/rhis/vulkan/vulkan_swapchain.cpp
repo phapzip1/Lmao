@@ -260,6 +260,7 @@ namespace Lmao::Rhi::Vulkan
                 .Format = mSurfaceFormat.format,
                 .Extent = mExtent,
                 .Layout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .Usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
             });
 
             const std::string prefix = fmt::format("Swapchain #{} image {}", mGeneration, i);

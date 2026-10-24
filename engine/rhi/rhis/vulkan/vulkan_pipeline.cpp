@@ -25,6 +25,72 @@ namespace Lmao::Rhi::Vulkan
             return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         }
 
+        VkCompareOp to_vk(CompareOp op)
+        {
+            switch (op)
+            {
+            case CompareOp::Never: return VK_COMPARE_OP_NEVER;
+            case CompareOp::Less: return VK_COMPARE_OP_LESS;
+            case CompareOp::Equal: return VK_COMPARE_OP_EQUAL;
+            case CompareOp::LessOrEqual: return VK_COMPARE_OP_LESS_OR_EQUAL;
+            case CompareOp::Greater: return VK_COMPARE_OP_GREATER;
+            case CompareOp::NotEqual: return VK_COMPARE_OP_NOT_EQUAL;
+            case CompareOp::GreaterOrEqual: return VK_COMPARE_OP_GREATER_OR_EQUAL;
+            case CompareOp::Always: return VK_COMPARE_OP_ALWAYS;
+            }
+            return VK_COMPARE_OP_GREATER;
+        }
+
+        VkBlendFactor to_vk(BlendFactor factor)
+        {
+            switch (factor)
+            {
+            case BlendFactor::Zero: return VK_BLEND_FACTOR_ZERO;
+            case BlendFactor::One: return VK_BLEND_FACTOR_ONE;
+            case BlendFactor::SourceColor: return VK_BLEND_FACTOR_SRC_COLOR;
+            case BlendFactor::OneMinusSourceColor: return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+            case BlendFactor::SourceAlpha: return VK_BLEND_FACTOR_SRC_ALPHA;
+            case BlendFactor::OneMinusSourceAlpha: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            case BlendFactor::DestinationColor: return VK_BLEND_FACTOR_DST_COLOR;
+            case BlendFactor::OneMinusDestinationColor: return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
+            case BlendFactor::DestinationAlpha: return VK_BLEND_FACTOR_DST_ALPHA;
+            case BlendFactor::OneMinusDestinationAlpha: return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+            }
+            return VK_BLEND_FACTOR_ONE;
+        }
+
+        VkBlendOp to_vk(BlendOp op)
+        {
+            switch (op)
+            {
+            case BlendOp::Add: return VK_BLEND_OP_ADD;
+            case BlendOp::Subtract: return VK_BLEND_OP_SUBTRACT;
+            case BlendOp::ReverseSubtract: return VK_BLEND_OP_REVERSE_SUBTRACT;
+            case BlendOp::Min: return VK_BLEND_OP_MIN;
+            case BlendOp::Max: return VK_BLEND_OP_MAX;
+            }
+            return VK_BLEND_OP_ADD;
+        }
+
+        VkPipelineColorBlendAttachmentState to_vk(const BlendState &blend)
+        {
+            VkColorComponentFlags mask = 0;
+            if (HasAny(blend.WriteMask, ColorMask::R)) mask |= VK_COLOR_COMPONENT_R_BIT;
+            if (HasAny(blend.WriteMask, ColorMask::G)) mask |= VK_COLOR_COMPONENT_G_BIT;
+            if (HasAny(blend.WriteMask, ColorMask::B)) mask |= VK_COLOR_COMPONENT_B_BIT;
+            if (HasAny(blend.WriteMask, ColorMask::A)) mask |= VK_COLOR_COMPONENT_A_BIT;
+            return {
+                .blendEnable = blend.Enable ? VK_TRUE : VK_FALSE,
+                .srcColorBlendFactor = to_vk(blend.SourceColor),
+                .dstColorBlendFactor = to_vk(blend.DestinationColor),
+                .colorBlendOp = to_vk(blend.ColorOp),
+                .srcAlphaBlendFactor = to_vk(blend.SourceAlpha),
+                .dstAlphaBlendFactor = to_vk(blend.DestinationAlpha),
+                .alphaBlendOp = to_vk(blend.AlphaOp),
+                .colorWriteMask = mask,
+            };
+        }
+
         VkCullModeFlags to_vk(CullMode cull)
         {
             switch (cull)
@@ -77,14 +143,35 @@ namespace Lmao::Rhi::Vulkan
             }
             color_formats.push_back(vk_format);
         }
+        if (!desc.Blend.empty() && desc.Blend.size() != desc.ColorFormats.size())
+        {
+            LMAO_LOG_ERROR(LogChannel(), "{}: {} blend states for {} color attachments (pass one per attachment, or none)",
+                           name, desc.Blend.size(), desc.ColorFormats.size());
+            return {};
+        }
+        const VkFormat depth_format = ToVkFormat(desc.DepthFormat);
+        if (desc.DepthFormat != Format::Unknown && !IsDepthFormat(desc.DepthFormat))
+        {
+            LMAO_LOG_ERROR(LogChannel(), "{}: depth format {} isn't a depth format", name, ToString(desc.DepthFormat));
+            return {};
+        }
 
         VkShaderModule vertex_module = create_shader_module(mDevice, desc.Vertex.Code, name + " (vertex)");
-        VkShaderModule fragment_module = create_shader_module(mDevice, desc.Fragment.Code, name + " (fragment)");
+        // No fragment shader: depth-only pipelines (shadow maps, depth pre-pass).
+        const bool has_fragment = !desc.Fragment.Code.empty();
+        if (!has_fragment && !desc.ColorFormats.empty())
+        {
+            vkDestroyShaderModule(mDevice, vertex_module, nullptr);
+            LMAO_LOG_ERROR(LogChannel(), "{}: a fragment shader is required when there are color attachments", name);
+            return {};
+        }
+        VkShaderModule fragment_module =
+            has_fragment ? create_shader_module(mDevice, desc.Fragment.Code, name + " (fragment)") : VK_NULL_HANDLE;
         const std::string vertex_entry(desc.Vertex.EntryPoint);
         const std::string fragment_entry(desc.Fragment.EntryPoint);
 
         VkPipeline pipeline = VK_NULL_HANDLE;
-        if (vertex_module != VK_NULL_HANDLE && fragment_module != VK_NULL_HANDLE)
+        if (vertex_module != VK_NULL_HANDLE && (fragment_module != VK_NULL_HANDLE || !has_fragment))
         {
             const VkPipelineShaderStageCreateInfo stages[] = {
                 {
@@ -126,11 +213,17 @@ namespace Lmao::Rhi::Vulkan
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                 .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
             };
-            const std::vector<VkPipelineColorBlendAttachmentState> blend_attachments(
-                color_formats.size(),
-                {.blendEnable = VK_FALSE,
-                 .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
-                                   VK_COLOR_COMPONENT_A_BIT});
+            std::vector<VkPipelineColorBlendAttachmentState> blend_attachments;
+            for (size_t i = 0; i < color_formats.size(); ++i)
+                blend_attachments.push_back(to_vk(desc.Blend.empty() ? BlendState::Opaque() : desc.Blend[i]));
+            const VkPipelineDepthStencilStateCreateInfo depth_stencil{
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+                .depthTestEnable = desc.Depth.TestEnable ? VK_TRUE : VK_FALSE,
+                .depthWriteEnable = desc.Depth.WriteEnable ? VK_TRUE : VK_FALSE,
+                .depthCompareOp = to_vk(desc.Depth.Compare),
+                .minDepthBounds = 0.0f,
+                .maxDepthBounds = 1.0f,
+            };
             const VkPipelineColorBlendStateCreateInfo color_blend{
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                 .attachmentCount = static_cast<uint32_t>(blend_attachments.size()),
@@ -146,18 +239,20 @@ namespace Lmao::Rhi::Vulkan
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
                 .colorAttachmentCount = static_cast<uint32_t>(color_formats.size()),
                 .pColorAttachmentFormats = color_formats.data(),
+                .depthAttachmentFormat = depth_format, // UNDEFINED when there is no depth attachment
             };
 
             const VkGraphicsPipelineCreateInfo create_info{
                 .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
                 .pNext = &rendering,
-                .stageCount = static_cast<uint32_t>(std::size(stages)),
+                .stageCount = has_fragment ? 2u : 1u,
                 .pStages = stages,
                 .pVertexInputState = &vertex_input,
                 .pInputAssemblyState = &input_assembly,
                 .pViewportState = &viewport_state,
                 .pRasterizationState = &rasterization,
                 .pMultisampleState = &multisample,
+                .pDepthStencilState = desc.DepthFormat != Format::Unknown ? &depth_stencil : nullptr,
                 .pColorBlendState = &color_blend,
                 .pDynamicState = &dynamic,
                 .layout = mPipelineLayout,

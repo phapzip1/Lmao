@@ -226,12 +226,18 @@ namespace Lmao::Rhi::Vulkan
         VkDebugUtilsMessengerCreateInfoEXT messenger_info = messenger_create_info(&instance->mMessengerState);
 
         const VkBool32 enable = VK_TRUE;
+        const bool gpu_validation = sync_validation && desc.GpuValidation;
+        if (desc.GpuValidation && !gpu_validation)
+            LMAO_LOG_WARN(LogChannel(), "GPU-assisted validation requested but needs the validation layer with {}",
+                          VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
         const VkLayerSettingEXT layer_settings[] = {
             {validation_layer, "validate_sync", VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &enable},
+            // Instruments shaders: out-of-range or destroyed bindless indices, out-of-bounds access.
+            {validation_layer, "gpuav_enable", VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &enable},
         };
         VkLayerSettingsCreateInfoEXT layer_settings_info{
             .sType = VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT,
-            .settingCount = static_cast<uint32_t>(std::size(layer_settings)),
+            .settingCount = gpu_validation ? 2u : 1u,
             .pSettings = layer_settings,
         };
 
@@ -266,7 +272,11 @@ namespace Lmao::Rhi::Vulkan
 
         LMAO_LOG_INFO(LogChannel(), "Vulkan instance created (loader {}, validation {}, surfaces: {})",
                       VersionToString(loader_version),
-                      !instance->mValidationEnabled ? "off" : sync_validation ? "on + sync" : "on", window_systems);
+                      !instance->mValidationEnabled ? "off"
+                      : gpu_validation              ? "on + sync + GPU-assisted"
+                      : sync_validation             ? "on + sync"
+                                                    : "on",
+                      window_systems);
         return instance;
     }
 

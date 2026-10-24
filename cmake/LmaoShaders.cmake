@@ -61,6 +61,9 @@ function(lmao_add_shaders target)
                     -fvk-use-entrypoint-name    # keep vertexMain/fragmentMain as SPIR-V entry names
                     -matrix-layout-column-major # matches glm and the engine convention
                     -warnings-as-errors all
+                    -warnings-disable 41012     # "profile implicitly upgraded": Texture2D lists optional
+                                                # capabilities; only the ones used are emitted
+                    -I "${PROJECT_SOURCE_DIR}/shaders" # import common.bindless;
                     "$<IF:$<CONFIG:Debug>,-g;-O0,-O2>" # -g: source-level debugging in RenderDoc
                     -depfile "${spv}.d"
                     -o "${spv}"
