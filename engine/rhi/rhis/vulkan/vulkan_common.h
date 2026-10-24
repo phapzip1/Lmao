@@ -4,6 +4,7 @@
 // volk.h must come before any other Vulkan header: it defines VK_NO_PROTOTYPES.
 
 #include "core/log/log.h"
+#include "rhi/types.h"
 
 #include <volk.h>
 
@@ -23,5 +24,8 @@ namespace Lmao::Rhi::Vulkan
     std::string VersionToString(uint32_t version);
 
     bool HasExtension(std::span<const VkExtensionProperties> extensions, const char *name);
+
+    VkFormat ToVkFormat(Format format);
+    Format FromVkFormat(VkFormat format); // Format::Unknown if the RHI has no equivalent
 
 } // namespace Lmao::Rhi::Vulkan

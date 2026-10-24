@@ -3,12 +3,17 @@
 add_library(lmao_rhi_vulkan STATIC
     vulkan_common.h
     vulkan_common.cpp
+    vulkan_command_list.h
+    vulkan_command_list.cpp
     vulkan_device.h
     vulkan_device.cpp
+    vulkan_device_internal.h
     vulkan_instance.h
     vulkan_instance.cpp
     vulkan_surface.h
     vulkan_surface.cpp # the only file that includes window-system headers
+    vulkan_swapchain.h
+    vulkan_swapchain.cpp
 )
 
 target_link_libraries(lmao_rhi_vulkan

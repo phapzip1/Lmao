@@ -68,4 +68,39 @@ namespace Lmao::Rhi::Vulkan
         return false;
     }
 
+    namespace
+    {
+        struct FormatPair
+        {
+            Format rhi;
+            VkFormat vk;
+        };
+
+        constexpr FormatPair format_pairs[] = {
+            {Format::RGBA8Unorm, VK_FORMAT_R8G8B8A8_UNORM},
+            {Format::RGBA8Srgb, VK_FORMAT_R8G8B8A8_SRGB},
+            {Format::BGRA8Unorm, VK_FORMAT_B8G8R8A8_UNORM},
+            {Format::BGRA8Srgb, VK_FORMAT_B8G8R8A8_SRGB},
+            {Format::RGB10A2Unorm, VK_FORMAT_A2B10G10R10_UNORM_PACK32},
+            {Format::RGBA16Float, VK_FORMAT_R16G16B16A16_SFLOAT},
+            {Format::D32Float, VK_FORMAT_D32_SFLOAT},
+        };
+    } // namespace
+
+    VkFormat ToVkFormat(Format format)
+    {
+        for (const FormatPair &pair : format_pairs)
+            if (pair.rhi == format)
+                return pair.vk;
+        return VK_FORMAT_UNDEFINED;
+    }
+
+    Format FromVkFormat(VkFormat format)
+    {
+        for (const FormatPair &pair : format_pairs)
+            if (pair.vk == format)
+                return pair.rhi;
+        return Format::Unknown;
+    }
+
 } // namespace Lmao::Rhi::Vulkan

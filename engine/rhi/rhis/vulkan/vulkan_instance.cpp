@@ -8,6 +8,12 @@
 #include <vector>
 
 #if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h> // IsDebuggerPresent
 #endif
 
@@ -82,12 +88,13 @@ namespace Lmao::Rhi::Vulkan
             return layers;
         }
 
-        std::vector<VkExtensionProperties> available_extensions()
+        // Extensions of the implementation and implicit layers, or of one layer if `layer` is set.
+        std::vector<VkExtensionProperties> available_extensions(const char *layer = nullptr)
         {
             uint32_t count = 0;
-            vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr);
+            vkEnumerateInstanceExtensionProperties(layer, &count, nullptr);
             std::vector<VkExtensionProperties> extensions(count);
-            vkEnumerateInstanceExtensionProperties(nullptr, &count, extensions.data());
+            vkEnumerateInstanceExtensionProperties(layer, &count, extensions.data());
             return extensions;
         }
 
@@ -179,14 +186,28 @@ namespace Lmao::Rhi::Vulkan
         if (instance->mHasDebugUtils)
             enabled_extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
+        bool sync_validation = false;
         if (desc.EnableValidation)
         {
             if (has_layer(layers, validation_layer))
+            {
                 enabled_layers.push_back(validation_layer);
+                // Synchronization validation catches missing barriers and semaphore misuse that core
+                // validation doesn't. Configured through VK_EXT_layer_settings, which the layer provides.
+                const std::vector<VkExtensionProperties> layer_extensions = available_extensions(validation_layer);
+                sync_validation = HasExtension(layer_extensions, VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
+                if (sync_validation)
+                    enabled_extensions.push_back(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
+                else
+                    LMAO_LOG_WARN(LogChannel(), "The validation layer is too old for {}; synchronization validation is off",
+                                  VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
+            }
             else
+            {
                 LMAO_LOG_WARN(LogChannel(), "Validation requested but {} is not installed (install the Vulkan SDK); "
                                             "continuing without it",
                               validation_layer);
+            }
         }
         instance->mValidationEnabled = !enabled_layers.empty();
 
@@ -204,9 +225,29 @@ namespace Lmao::Rhi::Vulkan
         // destruction are reported, not only those after the messenger exists.
         VkDebugUtilsMessengerCreateInfoEXT messenger_info = messenger_create_info(&instance->mMessengerState);
 
+        const VkBool32 enable = VK_TRUE;
+        const VkLayerSettingEXT layer_settings[] = {
+            {validation_layer, "validate_sync", VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &enable},
+        };
+        VkLayerSettingsCreateInfoEXT layer_settings_info{
+            .sType = VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT,
+            .settingCount = static_cast<uint32_t>(std::size(layer_settings)),
+            .pSettings = layer_settings,
+        };
+
+        // pNext chain: [messenger] -> [layer settings]
+        const void *next = nullptr;
+        if (sync_validation)
+            next = &layer_settings_info;
+        if (instance->mHasDebugUtils)
+        {
+            messenger_info.pNext = next;
+            next = &messenger_info;
+        }
+
         const VkInstanceCreateInfo create_info{
             .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-            .pNext = instance->mHasDebugUtils ? &messenger_info : nullptr,
+            .pNext = next,
             .pApplicationInfo = &application_info,
             .enabledLayerCount = static_cast<uint32_t>(enabled_layers.size()),
             .ppEnabledLayerNames = enabled_layers.data(),
@@ -224,7 +265,8 @@ namespace Lmao::Rhi::Vulkan
             return nullptr;
 
         LMAO_LOG_INFO(LogChannel(), "Vulkan instance created (loader {}, validation {}, surfaces: {})",
-                      VersionToString(loader_version), instance->mValidationEnabled ? "on" : "off", window_systems);
+                      VersionToString(loader_version),
+                      !instance->mValidationEnabled ? "off" : sync_validation ? "on + sync" : "on", window_systems);
         return instance;
     }
 

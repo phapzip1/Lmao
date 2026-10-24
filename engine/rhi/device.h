@@ -7,6 +7,10 @@
 //     auto device = Rhi::Device::Create({.ApplicationName = "Game"});
 //     LMAO_INFO("GPU: {}", device->GetAdapterInfo().Name);
 
+#include "rhi/command_list.h"
+#include "rhi/swapchain.h"
+#include "rhi/types.h"
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -53,9 +57,21 @@ namespace Lmao::Rhi
     };
 
     // One device per process for now. Destroy every object created from it first.
+    //
+    // Frame loop (one swapchain per frame for now):
+    //
+    //     if (Rhi::CommandList *commands = device->BeginFrame(*swapchain))
+    //     {
+    //         commands->BeginRendering({.Texture = swapchain->GetCurrentTexture(), .ClearColor = color});
+    //         commands->EndRendering();
+    //         device->EndFrame();
+    //     }
     class Device
     {
     public:
+        // The CPU records at most this many frames ahead of the GPU.
+        static constexpr uint32_t MaxFramesInFlight = 2;
+
         // Picks the best suitable GPU and logs every GPU it saw. nullptr on failure (the reason is logged).
         static std::unique_ptr<Device> Create(const DeviceDesc &desc = {});
 
@@ -69,6 +85,16 @@ namespace Lmao::Rhi
 
         // Blocks until the GPU has finished all submitted work.
         virtual void WaitIdle() = 0;
+
+        // nullptr on failure (the reason is logged).
+        virtual std::unique_ptr<Swapchain> CreateSwapchain(const SwapchainDesc &desc) = 0;
+
+        // Waits until the GPU is done with the frame slot being reused, acquires the swapchain's
+        // next image and starts recording. nullptr means "skip this frame" (minimized, or the
+        // swapchain could not be recreated); don't call EndFrame then.
+        virtual CommandList *BeginFrame(Swapchain &swapchain) = 0;
+        // Submits the frame's commands and presents the swapchain image.
+        virtual void EndFrame() = 0;
 
     protected:
         Device() = default;

@@ -1,9 +1,12 @@
-// Vulkan implementation of Rhi::Device: GPU selection and the logical device.
+// Vulkan implementation of Rhi::Device: GPU selection, the logical device and the frame loop.
 
 #include "rhi/rhis/vulkan/vulkan_device.h"
 
+#include "core/assert/assert.h"
 #include "core/profile/profile.h"
+#include "rhi/rhis/vulkan/vulkan_device_internal.h"
 #include "rhi/rhis/vulkan/vulkan_instance.h"
+#include "rhi/rhis/vulkan/vulkan_swapchain.h"
 
 #include <atomic>
 #include <iterator>
@@ -167,64 +170,6 @@ namespace Lmao::Rhi::Vulkan
             };
         }
 
-        class VulkanDevice final : public Device
-        {
-        public:
-            VulkanDevice(std::unique_ptr<Instance> instance, VkPhysicalDevice physical, VkDevice device,
-                         uint32_t queue_family, AdapterInfo info);
-            ~VulkanDevice() override;
-
-            Backend GetBackend() const override { return Backend::Vulkan; }
-            const AdapterInfo &GetAdapterInfo() const override { return mAdapterInfo; }
-            void WaitIdle() override;
-
-        private:
-            // Shows up in validation messages, RenderDoc and Nsight instead of a raw handle.
-            template <typename T>
-            void set_name(VkObjectType type, T handle, const char *name)
-            {
-                if (!mInstance->HasDebugUtils())
-                    return;
-                const VkDebugUtilsObjectNameInfoEXT info{
-                    .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
-                    .objectType = type,
-                    .objectHandle = reinterpret_cast<uint64_t>(handle),
-                    .pObjectName = name,
-                };
-                vkSetDebugUtilsObjectNameEXT(mDevice, &info);
-            }
-
-            std::unique_ptr<Instance> mInstance; // declared first: destroyed after the device
-            VkPhysicalDevice mPhysicalDevice;
-            VkDevice mDevice;
-            uint32_t mGraphicsQueueFamily;
-            VkQueue mGraphicsQueue = VK_NULL_HANDLE;
-            AdapterInfo mAdapterInfo;
-        };
-
-        VulkanDevice::VulkanDevice(std::unique_ptr<Instance> instance, VkPhysicalDevice physical, VkDevice device,
-                                   uint32_t queue_family, AdapterInfo info)
-            : mInstance(std::move(instance)), mPhysicalDevice(physical), mDevice(device),
-              mGraphicsQueueFamily(queue_family), mAdapterInfo(std::move(info))
-        {
-            vkGetDeviceQueue(mDevice, mGraphicsQueueFamily, 0, &mGraphicsQueue);
-            set_name(VK_OBJECT_TYPE_DEVICE, mDevice, "Lmao device");
-            set_name(VK_OBJECT_TYPE_QUEUE, mGraphicsQueue, "Graphics queue");
-        }
-
-        VulkanDevice::~VulkanDevice()
-        {
-            vkDeviceWaitIdle(mDevice);
-            vkDestroyDevice(mDevice, nullptr);
-            device_exists = false;
-        }
-
-        void VulkanDevice::WaitIdle()
-        {
-            LMAO_PROFILE_ZONE();
-            Check(vkDeviceWaitIdle(mDevice), "vkDeviceWaitIdle");
-        }
-
         std::unique_ptr<Device> create_device(const DeviceDesc &desc)
         {
             std::unique_ptr<Instance> instance = Instance::Create({
@@ -299,11 +244,186 @@ namespace Lmao::Rhi::Vulkan
 
             AdapterInfo info = make_adapter_info(best);
             LMAO_LOG_INFO(LogChannel(), "Using GPU: {} ({}, driver {})", info.Name, ToString(info.Type), info.Driver);
-            return std::make_unique<VulkanDevice>(std::move(instance), best.Physical, device, best.QueueFamily,
-                                                  std::move(info));
+            auto vulkan_device = std::make_unique<VulkanDevice>(std::move(instance), best.Physical, device,
+                                                                best.QueueFamily, std::move(info));
+            if (!vulkan_device->CreateFrameResources())
+                return nullptr;
+            return vulkan_device;
         }
 
     } // namespace
+
+    VulkanDevice::VulkanDevice(std::unique_ptr<Instance> instance, VkPhysicalDevice physical, VkDevice device,
+                               uint32_t queue_family, AdapterInfo info)
+        : mInstance(std::move(instance)), mPhysicalDevice(physical), mDevice(device),
+          mGraphicsQueueFamily(queue_family), mAdapterInfo(std::move(info)), mCommandList(*this)
+    {
+        vkGetDeviceQueue(mDevice, mGraphicsQueueFamily, 0, &mGraphicsQueue);
+        SetName(VK_OBJECT_TYPE_DEVICE, mDevice, "Lmao device");
+        SetName(VK_OBJECT_TYPE_QUEUE, mGraphicsQueue, "Graphics queue");
+    }
+
+    VulkanDevice::~VulkanDevice()
+    {
+        LMAO_ASSERT(mSwapchainCount == 0, "{} swapchain(s) still alive when the device was destroyed", mSwapchainCount);
+        LMAO_ASSERT(mTextures.IsEmpty(), "{} texture(s) still alive when the device was destroyed", mTextures.Size());
+        vkDeviceWaitIdle(mDevice);
+        destroy_frame_resources();
+        vkDestroyDevice(mDevice, nullptr);
+        device_exists = false;
+    }
+
+    void VulkanDevice::WaitIdle()
+    {
+        LMAO_PROFILE_ZONE();
+        Check(vkDeviceWaitIdle(mDevice), "vkDeviceWaitIdle");
+    }
+
+    bool VulkanDevice::CreateFrameResources()
+    {
+        VkSemaphoreTypeCreateInfo timeline_type{
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+            .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+            .initialValue = 0,
+        };
+        const VkSemaphoreCreateInfo timeline_info{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &timeline_type};
+        if (!Check(vkCreateSemaphore(mDevice, &timeline_info, nullptr, &mFrameTimeline), "vkCreateSemaphore (timeline)"))
+            return false;
+        SetName(VK_OBJECT_TYPE_SEMAPHORE, mFrameTimeline, "Frame timeline");
+
+        for (uint32_t i = 0; i < MaxFramesInFlight; ++i)
+        {
+            Frame &frame = mFrames[i];
+            const VkCommandPoolCreateInfo pool_info{
+                .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT, // reset as a whole every frame
+                .queueFamilyIndex = mGraphicsQueueFamily,
+            };
+            if (!Check(vkCreateCommandPool(mDevice, &pool_info, nullptr, &frame.command_pool), "vkCreateCommandPool"))
+                return false;
+
+            const VkCommandBufferAllocateInfo buffer_info{
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .commandPool = frame.command_pool,
+                .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                .commandBufferCount = 1,
+            };
+            if (!Check(vkAllocateCommandBuffers(mDevice, &buffer_info, &frame.command_buffer), "vkAllocateCommandBuffers"))
+                return false;
+
+            const VkSemaphoreCreateInfo semaphore_info{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+            if (!Check(vkCreateSemaphore(mDevice, &semaphore_info, nullptr, &frame.image_acquired), "vkCreateSemaphore"))
+                return false;
+
+            const std::string prefix = fmt::format("Frame {}", i);
+            SetName(VK_OBJECT_TYPE_COMMAND_POOL, frame.command_pool, (prefix + " command pool").c_str());
+            SetName(VK_OBJECT_TYPE_COMMAND_BUFFER, frame.command_buffer, (prefix + " command buffer").c_str());
+            SetName(VK_OBJECT_TYPE_SEMAPHORE, frame.image_acquired, (prefix + " image acquired").c_str());
+        }
+        return true;
+    }
+
+    void VulkanDevice::destroy_frame_resources()
+    {
+        for (Frame &frame : mFrames)
+        {
+            if (frame.image_acquired != VK_NULL_HANDLE)
+                vkDestroySemaphore(mDevice, frame.image_acquired, nullptr);
+            if (frame.command_pool != VK_NULL_HANDLE)
+                vkDestroyCommandPool(mDevice, frame.command_pool, nullptr); // frees its command buffer
+            frame = {};
+        }
+        if (mFrameTimeline != VK_NULL_HANDLE)
+            vkDestroySemaphore(mDevice, mFrameTimeline, nullptr);
+        mFrameTimeline = VK_NULL_HANDLE;
+    }
+
+    std::unique_ptr<Swapchain> VulkanDevice::CreateSwapchain(const SwapchainDesc &desc)
+    {
+        return VulkanSwapchain::Create(*this, desc);
+    }
+
+    CommandList *VulkanDevice::BeginFrame(Swapchain &swapchain)
+    {
+        LMAO_PROFILE_ZONE();
+        LMAO_ASSERT(mFrameSwapchain == nullptr, "BeginFrame called twice without EndFrame");
+        Frame &frame = mFrames[mFrameIndex];
+
+        {
+            // The GPU must be done with this slot's command buffer and acquire semaphore.
+            LMAO_PROFILE_ZONE_NAMED("Wait for frame slot");
+            const VkSemaphoreWaitInfo wait_info{
+                .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+                .semaphoreCount = 1,
+                .pSemaphores = &mFrameTimeline,
+                .pValues = &frame.timeline_value,
+            };
+            if (!Check(vkWaitSemaphores(mDevice, &wait_info, UINT64_MAX), "vkWaitSemaphores"))
+                return nullptr;
+        }
+
+        auto &vulkan_swapchain = static_cast<VulkanSwapchain &>(swapchain);
+        if (!vulkan_swapchain.Acquire(frame.image_acquired))
+            return nullptr;
+
+        Check(vkResetCommandPool(mDevice, frame.command_pool, 0), "vkResetCommandPool");
+        mCommandList.Begin(frame.command_buffer);
+        mFrameSwapchain = &vulkan_swapchain;
+        return &mCommandList;
+    }
+
+    void VulkanDevice::EndFrame()
+    {
+        LMAO_PROFILE_ZONE();
+        LMAO_ASSERT(mFrameSwapchain != nullptr, "EndFrame without a successful BeginFrame");
+        Frame &frame = mFrames[mFrameIndex];
+
+        mCommandList.TransitionForPresent(mFrameSwapchain->GetCurrentTexture());
+        mCommandList.End();
+
+        const VkSemaphoreSubmitInfo wait{
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            .semaphore = frame.image_acquired,
+            .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, // first use of the image
+        };
+        const uint64_t frame_value = mSubmittedFrames + 1;
+        const VkSemaphoreSubmitInfo signals[] = {
+            {
+                .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                .semaphore = mFrameSwapchain->GetRenderFinishedSemaphore(),
+                .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            },
+            {
+                .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                .semaphore = mFrameTimeline,
+                .value = frame_value,
+                .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            },
+        };
+        const VkCommandBufferSubmitInfo command_buffer{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+            .commandBuffer = frame.command_buffer,
+        };
+        const VkSubmitInfo2 submit{
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+            .waitSemaphoreInfoCount = 1,
+            .pWaitSemaphoreInfos = &wait,
+            .commandBufferInfoCount = 1,
+            .pCommandBufferInfos = &command_buffer,
+            .signalSemaphoreInfoCount = static_cast<uint32_t>(std::size(signals)),
+            .pSignalSemaphoreInfos = signals,
+        };
+        if (Check(vkQueueSubmit2(mGraphicsQueue, 1, &submit, VK_NULL_HANDLE), "vkQueueSubmit2"))
+        {
+            mSubmittedFrames = frame_value;
+            frame.timeline_value = frame_value;
+            mFrameSwapchain->Present(mGraphicsQueue);
+        }
+        // On failure (device lost) nothing was submitted; the slot's old value stays valid.
+
+        mFrameSwapchain = nullptr;
+        mFrameIndex = (mFrameIndex + 1) % MaxFramesInFlight;
+    }
 
     std::unique_ptr<Device> CreateDevice(const DeviceDesc &desc)
     {

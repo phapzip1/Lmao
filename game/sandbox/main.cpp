@@ -1,5 +1,6 @@
-// Sandbox: opens a window, creates the GPU device, logs every input event, and marks frames
-// for Tracy. Esc closes the window.
+// Sandbox: opens a window, creates the GPU device and a swapchain, clears the screen to a
+// slowly changing color, logs every input event, and marks frames for Tracy.
+// Esc closes the window; V toggles vsync.
 
 #include "core/log/log.h"
 #include "core/platform/crash_handler.h"
@@ -8,8 +9,7 @@
 #include "core/profile/profile.h"
 #include "rhi/device.h"
 
-#include <chrono>
-#include <thread>
+#include <cmath>
 #include <variant>
 
 using namespace Lmao;
@@ -59,9 +59,7 @@ int main()
     LMAO_PROFILE_THREAD_NAME("Main");
 
     {
-        // Wayland shows nothing until a frame is presented, and there is no renderer until M1,
-        // so use X11 (XWayland on Wayland sessions) for now.
-        auto platform = Platform::Create({.Display = DisplayBackend::X11});
+        auto platform = Platform::Create();
         if (!platform)
             return 1;
 
@@ -73,6 +71,18 @@ int main()
         if (!device)
             return 1;
 
+        const UVec2 framebuffer = window->GetFramebufferSize();
+        bool vsync = true;
+        auto swapchain = device->CreateSwapchain({
+            .Window = window->GetNativeHandle(),
+            .Width = framebuffer.x,
+            .Height = framebuffer.y,
+            .VSync = vsync,
+        });
+        if (!swapchain)
+            return 1;
+
+        Stopwatch clock;
         Stopwatch frame_timer;
         while (!window->ShouldClose())
         {
@@ -82,17 +92,36 @@ int main()
                 platform->PollEvents();
 
             for (const Event &event : platform->GetEvents())
-                log_event(event, *window);
-
             {
-                LMAO_PROFILE_ZONE_NAMED("Simulated work");
-                std::this_thread::sleep_for(std::chrono::milliseconds(16)); // stand-in for a frame
+                log_event(event, *window);
+                if (const auto *resize = std::get_if<FramebufferResizeEvent>(&event.Data))
+                    swapchain->Resize(resize->Width, resize->Height);
+                if (const auto *key = std::get_if<KeyEvent>(&event.Data);
+                    key && key->Code == Key::V && key->Action == KeyAction::Press)
+                {
+                    vsync = !vsync;
+                    swapchain->SetVSync(vsync);
+                    LMAO_INFO("VSync {}", vsync ? "on" : "off");
+                }
+            }
+
+            if (Rhi::CommandList *commands = device->BeginFrame(*swapchain))
+            {
+                const float t = static_cast<float>(clock.ElapsedSeconds());
+                const Vec4 color(0.5f + 0.5f * std::sin(t), 0.5f + 0.5f * std::sin(t + 2.1f),
+                                 0.5f + 0.5f * std::sin(t + 4.2f), 1.0f);
+
+                commands->BeginMarker("Clear");
+                commands->BeginRendering({.Texture = swapchain->GetCurrentTexture(), .ClearColor = color});
+                commands->EndRendering();
+                commands->EndMarker();
+                device->EndFrame();
             }
 
             LMAO_PROFILE_PLOT("Frame time (ms)", frame_timer.Lap() * 1000.0);
             LMAO_PROFILE_FRAME();
         }
-    } // device, window, then platform destroyed here (reverse order of creation)
+    } // swapchain, device, window, then platform destroyed here (reverse order of creation)
 
     LMAO_INFO("Bye");
     Log::Shutdown();

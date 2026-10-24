@@ -61,13 +61,11 @@ add_subdirectory(Vulkan-Headers SYSTEM EXCLUDE_FROM_ALL)
 set(VOLK_PULL_IN_VULKAN OFF CACHE BOOL "" FORCE)
 set(VOLK_INSTALL        OFF CACHE BOOL "" FORCE)
 set(VOLK_HEADERS_ONLY   OFF CACHE BOOL "" FORCE)
-if(WIN32)
-    # Loads vkCreateWin32SurfaceKHR for surfaces made from native window handles.
-    # vulkan.h then includes <windows.h>, so trim it.
-    set(VOLK_STATIC_DEFINES VK_USE_PLATFORM_WIN32_KHR WIN32_LEAN_AND_MEAN NOMINMAX CACHE STRING "" FORCE)
-endif()
-# Linux needs no defines here: X11/Wayland surface functions are loaded with vkGetInstanceProcAddr
-# in engine/rhi/rhis/vulkan/vulkan_surface.cpp, keeping <X11/Xlib.h> macros out of the backend.
+# No VK_USE_PLATFORM_* defines: surface functions (Win32, X11, Wayland) are loaded with
+# vkGetInstanceProcAddr in engine/rhi/rhis/vulkan/vulkan_surface.cpp, so <windows.h> and
+# <X11/Xlib.h> stay out of the rest of the backend. Forced empty (not just unset) so build
+# directories configured before this change drop the old cached value.
+set(VOLK_STATIC_DEFINES "" CACHE STRING "" FORCE)
 add_subdirectory(volk SYSTEM EXCLUDE_FROM_ALL)
 target_link_libraries(volk PUBLIC Vulkan::Headers)
 
