@@ -3,7 +3,7 @@
 | # | Name | Status | Started | Done | Tag |
 |---|------|--------|---------|------|-----|
 | M0 | Foundation | ✅ Done | 2026-10-21 |2026-10-24|[M0](https://github.com/phapzip1/Lmao/releases/tag/M0)|
-| M1 | Vulkan bootstrap | 🚧 In progress |2026-10-24| | |
+| M1 | Vulkan bootstrap | ✅ Done  |2026-10-24|2026-10-24| |
 | M2 | Render core | ⏳ Planned | | | |
 | M3 | Memory + jobs | ⏳ Planned | | | |
 | M4 | Scene + assets | ⏳ Planned | | | |
