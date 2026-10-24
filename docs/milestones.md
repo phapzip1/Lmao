@@ -3,7 +3,7 @@
 | # | Name | Status | Started | Done | Tag |
 |---|------|--------|---------|------|-----|
 | M0 | Foundation | ✅ Done | 2026-10-21 |2026-10-24|[M0](https://github.com/phapzip1/Lmao/releases/tag/M0)|
-| M1 | Vulkan bootstrap | ⏳ Planned | | | |
+| M1 | Vulkan bootstrap | 🚧 In progress |2026-10-24| | |
 | M2 | Render core | ⏳ Planned | | | |
 | M3 | Memory + jobs | ⏳ Planned | | | |
 | M4 | Scene + assets | ⏳ Planned | | | |
@@ -65,10 +65,10 @@ Rules:
 ## Exit criteria for later milestones
 
 **M1 — Vulkan bootstrap**
-- [ ] Instance + debug messenger; validation errors break into the debugger
-- [ ] Device selection requiring Vulkan 1.3 features
+- [ ] Instance + debug messenger; validation errors break into the debugger. Instance and messenger work (validation on, no messages); the debugger break still needs a test with a deliberate validation error
+- [x] Device selection requiring Vulkan 1.3 features. Picks the GTX 1650 and rejects the AMD iGPU (Vulkan 1.2 only), 2026-10-24
 - [ ] Swapchain + 2 frames in flight, one render-finished semaphore per swapchain image
-- [ ] Triangle rendered through `rhi::Device` (no Vulkan types outside `rhi_vulkan/`)
+- [ ] Triangle rendered through `Rhi::Device` (no Vulkan types outside `rhi/rhis/vulkan/`)
 - [ ] Survives resize and minimize with zero validation or sync-validation messages
 
 **M2 — Render core**
