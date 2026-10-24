@@ -13,10 +13,12 @@
 #include "rhi/swapchain.h"
 #include "rhi/types.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Lmao::Rhi
 {
@@ -60,6 +62,9 @@ namespace Lmao::Rhi
         // out-of-range or destroyed bindless indices and out-of-bounds buffer access. Much slower;
         // turn on while chasing a bug.
         bool GpuValidation = false;
+        // Most bytes of queued uploads (QueueUpload) copied per frame; bigger loads are spread
+        // over several frames so none of them stalls and staging memory stays bounded.
+        uint64_t UploadBudgetPerFrame = 16ull << 20;
     };
 
     class Device
@@ -101,6 +106,30 @@ namespace Lmao::Rhi
         virtual void DestroySampler(SamplerHandle sampler) = 0;
 
         virtual MemoryStats GetMemoryStats() const = 0;
+
+        // --- Queued uploads ----------------------------------------------------------------
+        // Callable at any time, also outside a frame (main thread only for now). The data is
+        // moved in, not copied. BeginFrame records queued work in order, up to
+        // DeviceDesc::UploadBudgetPerFrame bytes per frame: large buffers are split into byte
+        // ranges and large texture mips into bands of rows. Until every queued operation on a
+        // resource has been recorded, IsUploadPending() is true: don't draw with it, and use
+        // GetTextureIndex() to sample a placeholder instead. Destroying a resource drops its
+        // queued work. (CommandList::Upload* remains for small uploads inside a frame.)
+
+        // Needs BufferUsage::CopyDest.
+        virtual void QueueUpload(BufferHandle buffer, std::vector<std::byte> data, uint64_t offset = 0) = 0;
+        // One mip, tightly packed rows (see CommandList::UploadTexture). Needs TextureUsage::CopyDest.
+        virtual void QueueUpload(TextureHandle texture, uint32_t mip, std::vector<std::byte> data) = 0;
+        // Runs after the texture's earlier queued uploads (see CommandList::GenerateMips).
+        virtual void QueueGenerateMips(TextureHandle texture) = 0;
+
+        virtual bool IsUploadPending(BufferHandle buffer) const = 0;
+        virtual bool IsUploadPending(TextureHandle texture) const = 0;
+        // `texture`'s bindless index once its queued work has been recorded; until then (or for
+        // an invalid handle) `placeholder`'s, which defaults to the device fallback (index 0).
+        virtual TextureIndex GetTextureIndex(TextureHandle texture, TextureHandle placeholder = {}) const = 0;
+        // Bytes still waiting in the queue (e.g. for a loading bar).
+        virtual uint64_t GetPendingUploadBytes() const = 0;
 
         // An invalid handle on failure (the reason is logged).
         virtual PipelineHandle CreateGraphicsPipeline(const GraphicsPipelineDesc &desc) = 0;

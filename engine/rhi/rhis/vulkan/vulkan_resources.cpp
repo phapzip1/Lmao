@@ -162,6 +162,7 @@ namespace Lmao::Rhi::Vulkan
         if (!buffer || buffer->Destroyed)
             return;
         buffer->Destroyed = true;
+        drop_queued(handle, {});
         defer_destroy({.buffer = buffer->Handle, .allocation = buffer->Allocation, .buffer_slot = handle});
     }
 
@@ -300,6 +301,7 @@ namespace Lmao::Rhi::Vulkan
         if (!texture->Allocation)
             return;
         texture->Destroyed = true;
+        drop_queued({}, handle);
         defer_destroy({.image = texture->Image, .view = texture->View, .allocation = texture->Allocation,
                        .texture_slot = handle});
     }

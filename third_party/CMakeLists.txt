@@ -79,4 +79,17 @@ set(VMA_ENABLE_INSTALL      OFF CACHE BOOL "" FORCE)
 add_subdirectory(VulkanMemoryAllocator SYSTEM EXCLUDE_FROM_ALL)
 target_link_libraries(VulkanMemoryAllocator INTERFACE Vulkan::Headers)
 
+# --- cgltf (MIT) -------------------------------------------------------------
+# Single-header glTF 2.0 parser, no CMake. CGLTF_IMPLEMENTATION is defined in exactly one
+# engine file: engine/resource/third_party_impl.cpp.
+add_library(cgltf INTERFACE)
+target_include_directories(cgltf SYSTEM INTERFACE cgltf)
+
+# --- stb (MIT / public domain) -------------------------------------------------
+# Single-header libraries, no CMake; only stb_image is used. STB_IMAGE_IMPLEMENTATION (with
+# STBI_NO_STDIO: the engine does its own file IO) is defined in
+# engine/resource/third_party_impl.cpp.
+add_library(stb INTERFACE)
+target_include_directories(stb SYSTEM INTERFACE stb)
+
 tp_folder(glfw TracyClient spdlog volk)

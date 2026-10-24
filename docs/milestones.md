@@ -80,13 +80,16 @@ Rules:
 - [ ] Null backend runs the same frame headless
 
 *Follow-ups from M2 work (not exit criteria):*
-- Uploads only work inside a frame (`CommandList::Upload*`, per-frame staging ring). glTF loading needs either first-frame uploads or a small startup upload path; decide when loading lands. The real fix is M12's transfer-queue uploads.
+- ~~Uploads only work inside a frame~~ Queued uploads (`Device::QueueUpload` / `QueueGenerateMips`) can be made any time and are recorded at the start of later frames within `DeviceDesc::UploadBudgetPerFrame` (16 MiB), split into byte ranges / row bands: no single-frame stall, staging bounded by the upload ring. `IsUploadPending` / `GetTextureIndex(texture, placeholder)` let the renderer skip meshes and show placeholders until data arrives. Still frame-bound and main-thread only: loader threads (M3) and the transfer queue (M12) remain.
 
 **M3 — Memory + jobs**
 - [ ] Frame, pool and TLSF allocators with per-subsystem tracking UI
 - [ ] Work-stealing job system with counters
 - [ ] Parallel command recording; Tracy shows work spread across cores
 - [ ] No leaks at exit
+
+*Follow-ups from M2 work (not exit criteria):*
+- Decode a model's images in parallel on the job system: Sponza spends most of its ~1.6 s load decoding 25 JPEGs on one thread (`Resource::LoadGltf`).
 
 **M4 — Scene + assets**
 - [ ] ECS with transform hierarchy
@@ -97,6 +100,8 @@ Rules:
 
 *Follow-ups from M2 work (not exit criteria):*
 - Texture compression (BC1–BC7) in the asset cooker. The RHI only has uncompressed formats: `BytesPerTexel` becomes a block size, and `UploadTexture` / `CopyTextureToBuffer` size checks follow.
+- The glTF loader bakes node transforms into vertices; once scenes keep the hierarchy, the model matrix gets non-uniform scale, so shaders need a real normal matrix (inverse transpose) instead of the model matrix.
+- Embedded images as data URIs aren't loaded yet (`LoadGltf` warns and skips them); the cooker should accept every glTF image form.
 
 **M5 — Render graph + lighting**
 - [ ] Render graph with automatic barriers (abstract `ResourceState` only)
@@ -110,6 +115,8 @@ Rules:
 - Batch barriers and track individual resources instead of the conservative full barriers around every copy.
 - Stencil: a `D32S8` format, stencil state on pipelines and the stencil aspect in transitions, when outlines, decals or light volumes need it.
 - More bindless texture types (cube, array, 3D, integer storage images) as set 0 bindings with fallbacks, before shadow maps and environment maps (decision 0010).
+- Translucent materials (glTF `BLEND`) are drawn as alpha-cutout masks: they need their own pass, sorted back to front, with alpha blending.
+- One vertex + index buffer and one draw per mesh (Sponza: 103). Shared geometry buffers with offsets, then indirect / GPU-driven draws fed by culling.
 
 **M5b — D3D12 backend**
 - [ ] Same scenes and shaders render on D3D12

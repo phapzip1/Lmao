@@ -173,6 +173,8 @@ namespace Lmao
             bool ShouldClose() const override { return glfwWindowShouldClose(mHandle) != 0; }
             void SetShouldClose(bool should_close) override { glfwSetWindowShouldClose(mHandle, should_close ? GLFW_TRUE : GLFW_FALSE); }
             void SetTitle(std::string_view title) override { glfwSetWindowTitle(mHandle, std::string(title).c_str()); }
+            void SetCursorMode(CursorMode mode) override;
+            CursorMode GetCursorMode() const override { return mCursorMode; }
             NativeWindowHandle GetNativeHandle() const override { return Glfw::GetNativeHandle(mHandle); }
 
             GlfwPlatform &GetPlatform() { return mPlatform; }
@@ -182,6 +184,7 @@ namespace Lmao
 
             GlfwPlatform &mPlatform;
             GLFWwindow *mHandle;
+            CursorMode mCursorMode = CursorMode::Normal;
         };
 
         // --- GLFW callbacks: translate and queue ----------------------------------------------
@@ -332,6 +335,20 @@ namespace Lmao
             glfwSetCursorPosCallback(mHandle, &on_cursor_pos);
             glfwSetScrollCallback(mHandle, &on_scroll);
             glfwSetCursorEnterCallback(mHandle, &on_cursor_enter);
+        }
+
+        void GlfwWindow::SetCursorMode(CursorMode mode)
+        {
+            switch (mode)
+            {
+            case CursorMode::Normal: glfwSetInputMode(mHandle, GLFW_CURSOR, GLFW_CURSOR_NORMAL); break;
+            case CursorMode::Hidden: glfwSetInputMode(mHandle, GLFW_CURSOR, GLFW_CURSOR_HIDDEN); break;
+            case CursorMode::Captured: glfwSetInputMode(mHandle, GLFW_CURSOR, GLFW_CURSOR_DISABLED); break;
+            }
+            // Raw motion skips OS acceleration; only meaningful (and only allowed) while captured.
+            if (glfwRawMouseMotionSupported())
+                glfwSetInputMode(mHandle, GLFW_RAW_MOUSE_MOTION, mode == CursorMode::Captured ? GLFW_TRUE : GLFW_FALSE);
+            mCursorMode = mode;
         }
 
         UVec2 GlfwWindow::GetSize() const

@@ -11,8 +11,10 @@
 
 #include <vk_mem_alloc.h> // after volk (vulkan_common.h): VMA needs the Vulkan types
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <string>
@@ -36,8 +38,25 @@ namespace Lmao::Rhi::Vulkan
         VkImageLayout Layout = VK_IMAGE_LAYOUT_UNDEFINED;
         VkImageUsageFlags Usage = 0;
         VmaAllocation Allocation = VK_NULL_HANDLE; // null for images owned by a swapchain
+        uint32_t PendingUploads = 0; // queued operations not recorded yet (QueueUpload / QueueGenerateMips)
         bool Destroyed = false; // DestroyTexture was called; the slot is freed once the GPU is done
     };
+
+    inline VkExtent2D MipExtent(const Texture &texture, uint32_t mip)
+    {
+        return {std::max(texture.Extent.width >> mip, 1u), std::max(texture.Extent.height >> mip, 1u)};
+    }
+
+    // Bytes of one tightly packed row / mip; 0 for formats without a fixed texel size.
+    inline uint64_t MipRowBytes(const Texture &texture, uint32_t mip)
+    {
+        return uint64_t(MipExtent(texture, mip).width) * BytesPerTexel(FromVkFormat(texture.Format));
+    }
+
+    inline uint64_t MipBytes(const Texture &texture, uint32_t mip)
+    {
+        return MipRowBytes(texture, mip) * MipExtent(texture, mip).height;
+    }
 
     struct Buffer
     {
@@ -46,6 +65,7 @@ namespace Lmao::Rhi::Vulkan
         uint64_t Size = 0;
         VkBufferUsageFlags Usage = 0;
         void *Mapped = nullptr; // Upload and Readback buffers stay mapped
+        uint32_t PendingUploads = 0;
         bool Destroyed = false;
     };
 
@@ -100,6 +120,13 @@ namespace Lmao::Rhi::Vulkan
         SamplerHandle CreateSampler(const SamplerDesc &desc) override;
         void DestroySampler(SamplerHandle sampler) override;
         MemoryStats GetMemoryStats() const override;
+        void QueueUpload(BufferHandle buffer, std::vector<std::byte> data, uint64_t offset) override;
+        void QueueUpload(TextureHandle texture, uint32_t mip, std::vector<std::byte> data) override;
+        void QueueGenerateMips(TextureHandle texture) override;
+        bool IsUploadPending(BufferHandle buffer) const override;
+        bool IsUploadPending(TextureHandle texture) const override;
+        TextureIndex GetTextureIndex(TextureHandle texture, TextureHandle placeholder) const override;
+        uint64_t GetPendingUploadBytes() const override { return mQueuedBytes; }
         PipelineHandle CreateGraphicsPipeline(const GraphicsPipelineDesc &desc) override;
         void DestroyPipeline(PipelineHandle pipeline) override;
         CommandList *BeginFrame(Swapchain &swapchain) override;
@@ -135,7 +162,7 @@ namespace Lmao::Rhi::Vulkan
 
         // Called once by CreateDevice. false on failure (the reason is logged).
         // memory_budget: VK_EXT_memory_budget is enabled on the device.
-        bool Initialize(bool memory_budget);
+        bool Initialize(bool memory_budget, uint64_t upload_budget_per_frame);
 
         void OnSwapchainCreated() { ++mSwapchainCount; }
         void OnSwapchainDestroyed() { --mSwapchainCount; }
@@ -210,6 +237,30 @@ namespace Lmao::Rhi::Vulkan
         void point_slots_at_fallback(uint32_t binding, uint32_t first, uint32_t count);
         // Records and runs one command buffer outside the frame loop, waiting for it (startup only).
         bool submit_immediately(const std::function<void(VkCommandBuffer)> &record);
+        // One QueueUpload / QueueGenerateMips call, recorded over one or more frames.
+        struct QueuedUpload
+        {
+            enum class Kind : uint8_t
+            {
+                Buffer,
+                Texture,
+                GenerateMips
+            };
+            Kind kind = Kind::Buffer;
+            BufferHandle buffer;
+            TextureHandle texture;
+            uint64_t offset = 0; // buffer: destination offset
+            uint32_t mip = 0;    // texture
+            std::vector<std::byte> data;
+            uint64_t progress = 0; // buffer: bytes recorded; texture: rows recorded
+        };
+
+        // Records queued work into the frame being started, up to the per-frame budget.
+        void drain_upload_queue();
+        void finish_queued(const QueuedUpload &upload);
+        // Drops queued work for a resource being destroyed.
+        void drop_queued(BufferHandle buffer, TextureHandle texture);
+
         void destroy_frame_resources();
         // Queues `pending` until every frame that might use it (including the one being recorded) is done.
         void defer_destroy(PendingDestroy pending);
@@ -247,6 +298,11 @@ namespace Lmao::Rhi::Vulkan
         SamplerHandle mFallbackSampler;
         bool mShuttingDown = false; // skip pointing freed slots at the (also freed) fallbacks
         std::vector<PendingDestroy> mPendingDestroys;
+        std::deque<QueuedUpload> mUploadQueue;
+        uint64_t mQueuedBytes = 0;
+        uint64_t mUploadBudget = 16ull << 20;
+        uint64_t mUploadBurstBytes = 0;  // since the queue was last empty, for the "done" log line
+        uint32_t mUploadBurstFrames = 0;
         int mSwapchainCount = 0;
     };
 

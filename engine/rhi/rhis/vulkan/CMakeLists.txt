@@ -18,6 +18,7 @@ add_library(lmao_rhi_vulkan STATIC
     vulkan_surface.cpp # the only file that includes window-system headers
     vulkan_swapchain.h
     vulkan_swapchain.cpp
+    vulkan_uploads.cpp
 )
 
 target_link_libraries(lmao_rhi_vulkan

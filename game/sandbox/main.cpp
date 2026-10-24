@@ -1,8 +1,17 @@
-// Sandbox: opens a window, creates the GPU device and a swapchain, and draws a spinning,
-// textured cube (indexed, depth-tested with reverse-Z, perspective camera) with a translucent
-// triangle blended on top, all through the binding convention (bindless buffers, textures and
-// samplers; push constants; per-frame constants). Logs every input event and marks frames for Tracy.
+// Sandbox: opens a window, creates the GPU device and a swapchain, and draws a glTF model
+// (base-color textures, alpha cutout, simple lighting) with a fly camera. The model streams
+// in through queued uploads: meshes appear as they arrive and textures show a white
+// placeholder until theirs is ready. Everything goes through the
+// binding convention (bindless buffers, textures and samplers; push constants; per-frame
+// constants), depth-tested with reverse-Z. Without a model it draws a spinning textured cube
+// with a translucent triangle on top. Logs every input event and marks frames for Tracy.
+//
 // Esc closes the window; V toggles vsync; M logs GPU memory usage.
+// Camera: hold the right mouse button to look, WASD / Q / E to move, Shift faster, wheel for speed.
+//
+//   lmao_sandbox [--model <file.gltf|.glb>] [--gpu-validation]
+//
+// The default model is DamagedHelmet from scripts/fetch_assets.sh (or .ps1).
 // --gpu-validation: GPU-assisted validation (slow; checks bindless indices in shaders).
 
 #include "core/log/log.h"
@@ -10,14 +19,19 @@
 #include "core/platform/platform.h"
 #include "core/platform/time.h"
 #include "core/profile/profile.h"
+#include "fly_camera.h"
+#include "resource/gltf_loader.h"
 #include "rhi/device.h"
 #include "shaders/cube.spv.h"
+#include "shaders/model.spv.h"
 #include "shaders/triangle.spv.h"
 
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <variant>
 #include <vector>
@@ -128,6 +142,125 @@ namespace
         return mesh;
     }
 
+    struct ModelPush // shaders/model.slang
+    {
+        Mat4 Model;
+        Vec4 BaseColorFactor;
+        Rhi::BufferIndex Vertices;
+        Rhi::TextureIndex BaseColor;
+        Rhi::SamplerIndex Sampler;
+        float AlphaCutoff;
+    };
+    static_assert(sizeof(ModelPush) == 96 && offsetof(ModelPush, Vertices) == 80);
+
+    // A Resource::Model on the GPU: one vertex + index buffer per mesh, one texture per image.
+    struct GpuMesh
+    {
+        Rhi::BufferHandle Vertices;
+        Rhi::BufferHandle Indices;
+        uint32_t IndexCount = 0;
+        uint32_t Material = 0;
+    };
+
+    struct GpuMaterial
+    {
+        Vec4 BaseColorFactor{1.0f};
+        Rhi::TextureHandle BaseColor; // the model's texture, or the shared white one
+        float AlphaCutoff = 0.0f;     // 0: opaque
+        bool DoubleSided = false;
+    };
+
+    struct GpuModel
+    {
+        std::vector<GpuMesh> Meshes;
+        std::vector<GpuMaterial> Materials;
+        std::vector<Rhi::TextureHandle> Textures;
+    };
+
+    GpuModel create_gpu_model(Rhi::Device &device, const Resource::Model &model, Rhi::TextureHandle white)
+    {
+        GpuModel gpu;
+        for (const Resource::Image &image : model.Images)
+            gpu.Textures.push_back(device.CreateTexture({
+                .Width = image.Width,
+                .Height = image.Height,
+                .MipLevels = 0,
+                .Format = Rhi::Format::RGBA8Srgb, // base color is sRGB-encoded
+                .Usage = Rhi::TextureUsage::Sampled | Rhi::TextureUsage::CopySource | Rhi::TextureUsage::CopyDest,
+                .DebugName = image.Name,
+            }));
+        for (const Resource::Material &material : model.Materials)
+        {
+            const bool textured = material.BaseColorImage >= 0 && gpu.Textures[material.BaseColorImage].IsValid();
+            gpu.Materials.push_back({
+                .BaseColorFactor = material.BaseColorFactor,
+                .BaseColor = textured ? gpu.Textures[material.BaseColorImage] : white,
+                // Blend materials are cut out like masks until the renderer sorts translucent draws.
+                .AlphaCutoff = material.Alpha == Resource::AlphaMode::Opaque ? 0.0f : material.AlphaCutoff,
+                .DoubleSided = material.DoubleSided,
+            });
+        }
+        for (size_t i = 0; i < model.Meshes.size(); ++i)
+        {
+            const Resource::Mesh &mesh = model.Meshes[i];
+            gpu.Meshes.push_back({
+                .Vertices = device.CreateBuffer({
+                    .Size = mesh.Vertices.size() * sizeof(Resource::MeshVertex),
+                    .Usage = Rhi::BufferUsage::Storage | Rhi::BufferUsage::CopyDest,
+                    .DebugName = fmt::format("{} mesh {} vertices", model.Name, i),
+                }),
+                .Indices = device.CreateBuffer({
+                    .Size = mesh.Indices.size() * sizeof(uint32_t),
+                    .Usage = Rhi::BufferUsage::Index | Rhi::BufferUsage::CopyDest,
+                    .DebugName = fmt::format("{} mesh {} indices", model.Name, i),
+                }),
+                .IndexCount = static_cast<uint32_t>(mesh.Indices.size()),
+                .Material = mesh.Material,
+            });
+        }
+        return gpu;
+    }
+
+    template <typename T>
+    std::vector<std::byte> to_bytes(const std::vector<T> &values)
+    {
+        const auto bytes = std::as_bytes(std::span(values));
+        return {bytes.begin(), bytes.end()};
+    }
+
+    // Queued, not uploaded: the device spreads it over frames within its upload budget. Image
+    // pixels are moved into the queue; the CPU-side model keeps only materials and bounds.
+    void queue_gpu_model(Rhi::Device &device, const GpuModel &gpu, Resource::Model &model)
+    {
+        for (size_t i = 0; i < model.Meshes.size(); ++i)
+        {
+            device.QueueUpload(gpu.Meshes[i].Vertices, to_bytes(model.Meshes[i].Vertices));
+            device.QueueUpload(gpu.Meshes[i].Indices, to_bytes(model.Meshes[i].Indices));
+        }
+        for (size_t i = 0; i < model.Images.size(); ++i)
+        {
+            if (!gpu.Textures[i])
+                continue;
+            device.QueueUpload(gpu.Textures[i], 0, std::move(model.Images[i].Pixels));
+            device.QueueGenerateMips(gpu.Textures[i]);
+        }
+        model.Meshes.clear();
+        model.Images.clear();
+    }
+
+    void destroy_gpu_model(Rhi::Device &device, GpuModel &gpu)
+    {
+        for (const GpuMesh &mesh : gpu.Meshes)
+        {
+            device.DestroyBuffer(mesh.Vertices);
+            device.DestroyBuffer(mesh.Indices);
+        }
+        for (Rhi::TextureHandle texture : gpu.Textures)
+            if (texture)
+                device.DestroyTexture(texture);
+        gpu = {};
+    }
+
     // 256x256 RGBA8, 32-texel checks.
     std::vector<uint32_t> make_checkerboard()
     {
@@ -176,8 +309,15 @@ namespace
 int main(int argc, char **argv)
 {
     bool gpu_validation = false;
+    std::string model_path = LMAO_ASSET_DIR "/external/glTF-Sample-Assets/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb";
     for (int i = 1; i < argc; ++i)
-        gpu_validation |= std::string_view(argv[i]) == "--gpu-validation";
+    {
+        const std::string_view argument(argv[i]);
+        if (argument == "--gpu-validation")
+            gpu_validation = true;
+        else if (argument == "--model" && i + 1 < argc)
+            model_path = argv[++i];
+    }
 
     Log::Init({.MinLevel = Log::Level::Debug, .FilePath = "logs/sandbox.log"});
     CrashHandler::Install();
@@ -228,7 +368,19 @@ int main(int argc, char **argv)
             .Depth = {.TestEnable = false, .WriteEnable = false},
             .DebugName = "Triangle overlay",
         });
-        if (!cube || !triangle)
+        const auto model_code = std::as_bytes(std::span(Shaders::Model));
+        Rhi::GraphicsPipelineDesc model_desc{
+            .Vertex = {.Code = model_code, .EntryPoint = "vertexMain"},
+            .Fragment = {.Code = model_code, .EntryPoint = "fragmentMain"},
+            .ColorFormats = color_formats,
+            .DepthFormat = depth_format,
+            .DebugName = "Model",
+        };
+        const Rhi::PipelineHandle model_pipeline = device->CreateGraphicsPipeline(model_desc);
+        model_desc.Cull = Rhi::CullMode::None;
+        model_desc.DebugName = "Model (double-sided)";
+        const Rhi::PipelineHandle model_double_sided = device->CreateGraphicsPipeline(model_desc);
+        if (!cube || !triangle || !model_pipeline || !model_double_sided)
             return 1;
 
         // Recreated whenever the swapchain changes size (deferred destruction keeps the old one
@@ -268,6 +420,38 @@ int main(int argc, char **argv)
             return 1;
         bool uploaded = false; // done in the first frame: uploads are recorded into a frame
 
+        // The model: decoded on the CPU now, then streamed to the GPU over the next frames.
+        const Rhi::TextureHandle white = device->CreateTexture({
+            .Width = 1,
+            .Height = 1,
+            .Format = Rhi::Format::RGBA8Srgb,
+            .Usage = Rhi::TextureUsage::Sampled | Rhi::TextureUsage::CopyDest,
+            .DebugName = "White",
+        });
+        std::optional<Resource::Model> model = Resource::LoadGltf(model_path);
+        if (!model)
+            LMAO_WARN("No model loaded (run scripts/fetch_assets.sh, or pass --model <file>): showing the cube");
+        GpuModel gpu_model = model ? create_gpu_model(*device, *model, white) : GpuModel{};
+        device->QueueUpload(white, 0, std::vector<std::byte>(4, std::byte{0xFF}));
+        if (model)
+            queue_gpu_model(*device, gpu_model, *model);
+
+        Sandbox::FlyCamera camera;
+        float near_plane = 0.1f;
+        if (model)
+        {
+            // Frame the model: from the front, a little above, far enough to see all of it.
+            const Vec3 center = 0.5f * (model->BoundsMin + model->BoundsMax);
+            const float radius = std::max(0.5f * glm::length(model->BoundsMax - model->BoundsMin), 0.5f);
+            camera.LookAt(center + Vec3(0.0f, 0.3f * radius, 1.8f * radius), center);
+            camera.SetSpeed(0.5f * radius);
+            near_plane = std::clamp(0.005f * radius, 0.01f, 0.1f);
+        }
+        else
+        {
+            camera.LookAt(Vec3(0.0f, 1.2f, 2.6f), Vec3(0.0f));
+        }
+
         Stopwatch clock;
         Stopwatch frame_timer;
         while (!window->ShouldClose())
@@ -280,6 +464,7 @@ int main(int argc, char **argv)
             for (const Event &event : platform->GetEvents())
             {
                 log_event(event, *window);
+                camera.OnEvent(event, *window);
                 if (const auto *resize = std::get_if<FramebufferResizeEvent>(&event.Data))
                     swapchain->Resize(resize->Width, resize->Height);
                 if (const auto *key = std::get_if<KeyEvent>(&event.Data);
@@ -301,6 +486,7 @@ int main(int argc, char **argv)
             }
 
             const double delta_time = frame_timer.Lap();
+            camera.Update(static_cast<float>(delta_time));
             if (Rhi::CommandList *commands = device->BeginFrame(*swapchain))
             {
                 if (!uploaded)
@@ -337,12 +523,11 @@ int main(int argc, char **argv)
 
                 // Perspective camera with an infinite far plane: reverse-Z keeps precision at any distance.
                 const float aspect = static_cast<float>(size.x) / static_cast<float>(size.y);
-                const Vec3 eye(0.0f, 1.2f, 2.6f);
                 FrameConstants frame{};
-                frame.View = Math::LookAt(eye, Vec3(0.0f));
-                frame.Projection = Math::PerspectiveInfiniteReverseZ(Math::Radians(60.0f), aspect, 0.1f);
+                frame.View = camera.GetView();
+                frame.Projection = Math::PerspectiveInfiniteReverseZ(Math::Radians(60.0f), aspect, near_plane);
                 frame.ViewProjection = frame.Projection * frame.View;
-                frame.CameraPosition = Vec4(eye, 1.0f);
+                frame.CameraPosition = Vec4(camera.GetPosition(), 1.0f);
                 frame.Time = t;
                 frame.DeltaTime = static_cast<float>(delta_time);
                 frame.Resolution[0] = size.x;
@@ -358,25 +543,56 @@ int main(int argc, char **argv)
                 commands->SetViewport({.Width = static_cast<float>(size.x), .Height = static_cast<float>(size.y)});
                 commands->SetScissor({.Width = size.x, .Height = size.y});
 
-                commands->BindPipeline(cube);
-                commands->BindIndexBuffer(cube_indices, Rhi::IndexType::UInt16);
-                commands->PushConstants(CubePush{
-                    .Model = glm::rotate(glm::rotate(Mat4(1.0f), t * 0.7f, Math::Up), t * 0.4f, Math::Right),
-                    .Vertices = Rhi::DescriptorIndex(cube_vertices),
-                    .Texture = Rhi::DescriptorIndex(checkerboard),
-                    .Sampler = Rhi::DescriptorIndex(sampler),
-                    .Pad = 0,
-                });
-                commands->DrawIndexed(static_cast<uint32_t>(cube_mesh.Indices.size()));
+                if (model)
+                {
+                    Rhi::PipelineHandle bound;
+                    for (const GpuMesh &mesh : gpu_model.Meshes)
+                    {
+                        // Still streaming in: skip it this frame.
+                        if (device->IsUploadPending(mesh.Vertices) || device->IsUploadPending(mesh.Indices))
+                            continue;
+                        const GpuMaterial &material = gpu_model.Materials[mesh.Material];
+                        const Rhi::PipelineHandle pipeline = material.DoubleSided ? model_double_sided : model_pipeline;
+                        if (pipeline != bound)
+                        {
+                            commands->BindPipeline(pipeline);
+                            bound = pipeline;
+                        }
+                        commands->BindIndexBuffer(mesh.Indices, Rhi::IndexType::UInt32);
+                        commands->PushConstants(ModelPush{
+                            .Model = Mat4(1.0f),
+                            .BaseColorFactor = material.BaseColorFactor,
+                            .Vertices = Rhi::DescriptorIndex(mesh.Vertices),
+                            // White until the texture's upload and mips are recorded.
+                            .BaseColor = device->GetTextureIndex(material.BaseColor, white),
+                            .Sampler = Rhi::DescriptorIndex(sampler),
+                            .AlphaCutoff = material.AlphaCutoff,
+                        });
+                        commands->DrawIndexed(mesh.IndexCount);
+                    }
+                }
+                else
+                {
+                    commands->BindPipeline(cube);
+                    commands->BindIndexBuffer(cube_indices, Rhi::IndexType::UInt16);
+                    commands->PushConstants(CubePush{
+                        .Model = glm::rotate(glm::rotate(Mat4(1.0f), t * 0.7f, Math::Up), t * 0.4f, Math::Right),
+                        .Vertices = Rhi::DescriptorIndex(cube_vertices),
+                        .Texture = Rhi::DescriptorIndex(checkerboard),
+                        .Sampler = Rhi::DescriptorIndex(sampler),
+                        .Pad = 0,
+                    });
+                    commands->DrawIndexed(static_cast<uint32_t>(cube_mesh.Indices.size()));
 
-                commands->BindPipeline(triangle);
-                commands->PushConstants(TrianglePush{
-                    .Vertices = Rhi::DescriptorIndex(vertex_buffer),
-                    .Texture = Rhi::DescriptorIndex(checkerboard),
-                    .Sampler = Rhi::DescriptorIndex(sampler),
-                    .Spin = 0.5f,
-                });
-                commands->Draw(3);
+                    commands->BindPipeline(triangle);
+                    commands->PushConstants(TrianglePush{
+                        .Vertices = Rhi::DescriptorIndex(vertex_buffer),
+                        .Texture = Rhi::DescriptorIndex(checkerboard),
+                        .Sampler = Rhi::DescriptorIndex(sampler),
+                        .Spin = 0.5f,
+                    });
+                    commands->Draw(3);
+                }
                 commands->EndRendering();
                 commands->EndMarker();
                 device->EndFrame();
@@ -386,6 +602,10 @@ int main(int argc, char **argv)
             LMAO_PROFILE_FRAME();
         }
 
+        destroy_gpu_model(*device, gpu_model);
+        device->DestroyTexture(white);
+        device->DestroyPipeline(model_pipeline);
+        device->DestroyPipeline(model_double_sided);
         if (depth)
             device->DestroyTexture(depth);
         device->DestroyBuffer(cube_indices);

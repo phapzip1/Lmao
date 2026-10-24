@@ -64,18 +64,6 @@ namespace Lmao::Rhi::Vulkan
             return op == StoreOp::Store ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
         }
 
-        VkExtent2D mip_extent(const Texture &texture, uint32_t mip)
-        {
-            return {std::max(texture.Extent.width >> mip, 1u), std::max(texture.Extent.height >> mip, 1u)};
-        }
-
-        // Bytes of one tightly packed mip; 0 for formats without a fixed texel size.
-        uint64_t mip_bytes(const Texture &texture, uint32_t mip)
-        {
-            const VkExtent2D extent = mip_extent(texture, mip);
-            return uint64_t(extent.width) * extent.height * BytesPerTexel(FromVkFormat(texture.Format));
-        }
-
     } // namespace
 
     void VulkanCommandList::Begin(VkCommandBuffer command_buffer)
@@ -412,10 +400,22 @@ namespace Lmao::Rhi::Vulkan
         LMAO_ASSERT(mip < texture.MipLevels, "UploadTexture: mip {} of a texture with {} mips", mip, texture.MipLevels);
         if (mip >= texture.MipLevels)
             return;
-        const uint64_t expected = mip_bytes(texture, mip);
+        const uint64_t expected = MipBytes(texture, mip);
         LMAO_ASSERT(data.size() == expected, "UploadTexture: mip {} needs {} bytes, got {}", mip, expected, data.size());
         if (data.size() != expected)
             return;
+
+        UploadTextureRows(handle, mip, 0, MipExtent(texture, mip).height, data, true);
+    }
+
+    void VulkanCommandList::UploadTextureRows(TextureHandle handle, uint32_t mip, uint32_t first_row,
+                                              uint32_t row_count, std::span<const std::byte> data, bool last)
+    {
+        Texture &texture = mDevice.GetTexture(handle);
+        const VkExtent2D extent = MipExtent(texture, mip);
+        LMAO_ASSERT(first_row + row_count <= extent.height && data.size() == MipRowBytes(texture, mip) * row_count,
+                    "UploadTextureRows: rows {}..{} of a {}-row mip with {} bytes", first_row, first_row + row_count,
+                    extent.height, data.size());
 
         const StagingSpace staging = mDevice.AllocateStaging(data.size());
         if (!staging.Data)
@@ -423,12 +423,12 @@ namespace Lmao::Rhi::Vulkan
         std::memcpy(staging.Data, data.data(), data.size());
 
         transition(texture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-        const VkExtent2D extent = mip_extent(texture, mip);
         const VkBufferImageCopy2 region{
             .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
             .bufferOffset = staging.Offset,
             .imageSubresource = {.aspectMask = texture.Aspect, .mipLevel = mip, .layerCount = 1},
-            .imageExtent = {extent.width, extent.height, 1},
+            .imageOffset = {0, static_cast<int32_t>(first_row), 0},
+            .imageExtent = {extent.width, row_count, 1},
         };
         const VkCopyBufferToImageInfo2 copy{
             .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
@@ -440,7 +440,7 @@ namespace Lmao::Rhi::Vulkan
         };
         vkCmdCopyBufferToImage2(mCommandBuffer, &copy);
 
-        if (texture.Usage & VK_IMAGE_USAGE_SAMPLED_BIT)
+        if (last && (texture.Usage & VK_IMAGE_USAGE_SAMPLED_BIT))
             transition(texture, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 
@@ -473,8 +473,8 @@ namespace Lmao::Rhi::Vulkan
         for (uint32_t mip = 1; mip < texture.MipLevels; ++mip)
         {
             image_barrier(texture, mip - 1, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-            const VkExtent2D source = mip_extent(texture, mip - 1);
-            const VkExtent2D destination = mip_extent(texture, mip);
+            const VkExtent2D source = MipExtent(texture, mip - 1);
+            const VkExtent2D destination = MipExtent(texture, mip);
             const VkImageBlit2 blit{
                 .sType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2,
                 .srcSubresource = {.aspectMask = texture.Aspect, .mipLevel = mip - 1, .layerCount = 1},
@@ -548,12 +548,12 @@ namespace Lmao::Rhi::Vulkan
         LMAO_ASSERT(buffer.Usage & VK_BUFFER_USAGE_TRANSFER_DST_BIT, "CopyTextureToBuffer: the buffer has no CopyDest usage");
         LMAO_ASSERT(mip < texture.MipLevels, "CopyTextureToBuffer: mip {} of a texture with {} mips", mip, texture.MipLevels);
         LMAO_ASSERT(offset % 16 == 0, "CopyTextureToBuffer: the buffer offset must be a multiple of 16");
-        LMAO_ASSERT(offset + mip_bytes(texture, mip) <= buffer.Size, "CopyTextureToBuffer: mip {} doesn't fit the buffer", mip);
+        LMAO_ASSERT(offset + MipBytes(texture, mip) <= buffer.Size, "CopyTextureToBuffer: mip {} doesn't fit the buffer", mip);
         if (mip >= texture.MipLevels)
             return;
 
         transition(texture, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-        const VkExtent2D extent = mip_extent(texture, mip);
+        const VkExtent2D extent = MipExtent(texture, mip);
         const VkBufferImageCopy2 region{
             .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
             .bufferOffset = offset,

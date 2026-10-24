@@ -49,6 +49,8 @@ namespace Lmao::Rhi::Vulkan
         {
             fn("dynamicRendering", chain.Vulkan13.dynamicRendering);
             fn("synchronization2", chain.Vulkan13.synchronization2);
+            // Slang lowers `discard` to SPIR-V 1.6 demote (alpha-tested materials); mandatory in 1.3
+            fn("shaderDemoteToHelperInvocation", chain.Vulkan13.shaderDemoteToHelperInvocation);
             fn("timelineSemaphore", chain.Vulkan12.timelineSemaphore);
             fn("bufferDeviceAddress", chain.Vulkan12.bufferDeviceAddress);
             fn("samplerAnisotropy", chain.Features2.features.samplerAnisotropy);
@@ -268,7 +270,7 @@ namespace Lmao::Rhi::Vulkan
             LMAO_LOG_INFO(LogChannel(), "Using GPU: {} ({}, driver {})", info.Name, ToString(info.Type), info.Driver);
             auto vulkan_device = std::make_unique<VulkanDevice>(std::move(instance), best.Physical, device,
                                                                 best.QueueFamily, std::move(info));
-            if (!vulkan_device->Initialize(memory_budget))
+            if (!vulkan_device->Initialize(memory_budget, desc.UploadBudgetPerFrame))
                 return nullptr;
             return vulkan_device;
         }
@@ -324,8 +326,10 @@ namespace Lmao::Rhi::Vulkan
         Check(vkDeviceWaitIdle(mDevice), "vkDeviceWaitIdle");
     }
 
-    bool VulkanDevice::Initialize(bool memory_budget)
+    bool VulkanDevice::Initialize(bool memory_budget, uint64_t upload_budget_per_frame)
     {
+        // The budget must fit the upload ring with room left for in-frame CommandList::Upload*.
+        mUploadBudget = std::clamp<uint64_t>(upload_budget_per_frame, 64 * 1024, UploadRingSize / 2);
         VkPhysicalDeviceVulkan12Properties vulkan12{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
         VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &vulkan12};
         vkGetPhysicalDeviceProperties2(mPhysicalDevice, &properties);
@@ -535,8 +539,9 @@ namespace Lmao::Rhi::Vulkan
 
         Check(vkResetCommandPool(mDevice, frame.command_pool, 0), "vkResetCommandPool");
         frame.upload_used = 0; // the GPU has finished the copies that read it
+        mFrameSwapchain = &vulkan_swapchain; // before recording: staging allocation needs it
         mCommandList.Begin(frame.command_buffer);
-        mFrameSwapchain = &vulkan_swapchain;
+        drain_upload_queue();
         return &mCommandList;
     }
 

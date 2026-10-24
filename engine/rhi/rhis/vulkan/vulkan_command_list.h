@@ -44,6 +44,10 @@ namespace Lmao::Rhi::Vulkan
         void Begin(VkCommandBuffer command_buffer); // starts recording into command_buffer
         void End();
         void TransitionForPresent(TextureHandle texture);
+        // Rows [first_row, first_row + row_count) of one mip, tightly packed. `last`: the texture
+        // gets no more data now, so a sampled texture is moved to its shader-read layout.
+        void UploadTextureRows(TextureHandle texture, uint32_t mip, uint32_t first_row, uint32_t row_count,
+                               std::span<const std::byte> data, bool last);
 
     private:
         // All mips of `texture` to `new_layout`; no-op if already there.

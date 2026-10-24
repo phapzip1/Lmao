@@ -35,6 +35,14 @@ namespace Lmao
         uint64_t Handle = 0;     // Win32: HWND        X11: Window XID  Wayland: wl_surface*   Cocoa: NSWindow*
     };
 
+    enum class CursorMode : uint8_t
+    {
+        Normal,  // visible, moves freely
+        Hidden,  // invisible over the window, moves freely
+        Captured // invisible and locked to the window; MouseMoveEvent keeps reporting unbounded
+                 // movement (raw, unaccelerated motion where the OS supports it): for mouse look
+    };
+
     // Created by Platform::OpenWindow(); destroyed by destroying the object. The window must be
     // destroyed before the Platform that created it. All calls must come from the main thread.
     class Window
@@ -57,6 +65,9 @@ namespace Lmao
         virtual void SetShouldClose(bool should_close) = 0;
 
         virtual void SetTitle(std::string_view title) = 0; // UTF-8
+
+        virtual void SetCursorMode(CursorMode mode) = 0;
+        virtual CursorMode GetCursorMode() const = 0;
 
         virtual NativeWindowHandle GetNativeHandle() const = 0;
 

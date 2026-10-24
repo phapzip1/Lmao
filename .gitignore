@@ -33,6 +33,9 @@ compile_commands.json
 *.pch
 *.gch
 
+# ---- Test models fetched by scripts/fetch_assets.sh / .ps1 ----
+assets/external/
+
 # ---- Prebuilt tools fetched by scripts/setup.ps1 ----
 tools/bin/
 
