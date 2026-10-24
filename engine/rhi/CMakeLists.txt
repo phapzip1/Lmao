@@ -6,6 +6,7 @@ target_link_libraries(lmao_rhi_interface INTERFACE Lmao::core)
 
 # One target per backend, each in rhis/<api>/.
 add_subdirectory(rhis/vulkan)
+add_subdirectory(rhis/null)
 
 # What engine and game code link: the interface plus Device::Create, which picks a backend
 # at runtime. Backends are PRIVATE so their headers and libraries don't reach consumers.
@@ -17,7 +18,7 @@ add_library(Lmao::rhi ALIAS lmao_rhi)
 
 target_link_libraries(lmao_rhi
     PUBLIC lmao_rhi_interface
-    PRIVATE lmao_rhi_vulkan)
+    PRIVATE lmao_rhi_vulkan lmao_rhi_null)
 
 lmao_set_warnings(lmao_rhi)
 set_target_properties(lmao_rhi PROPERTIES FOLDER "engine")

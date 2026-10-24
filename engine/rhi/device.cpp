@@ -4,6 +4,7 @@
 
 #include "core/log/log.h"
 #include "core/profile/profile.h"
+#include "rhi/rhis/null/null_device.h"
 #include "rhi/rhis/vulkan/vulkan_device.h"
 
 namespace Lmao::Rhi
@@ -16,6 +17,8 @@ namespace Lmao::Rhi
         {
         case Backend::Vulkan:
             return Vulkan::CreateDevice(desc);
+        case Backend::Null:
+            return Null::CreateDevice(desc);
         }
         LMAO_ERROR("Unknown RHI backend {}", static_cast<int>(desc.Api));
         return nullptr;

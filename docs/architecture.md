@@ -86,7 +86,7 @@ Modeled on the common ground of Vulkan, D3D12 and Metal; simpler APIs emulate it
 - Capabilities are queried (`device->caps()`), never assumed.
 - Coarse virtual interface (`Device`, `CommandList`): no per-state setters; state lives in pipelines.
 - Destruction is deferred until the GPU is done with the resource.
-- **Null backend** from the start: dedicated servers, tests, CI without a GPU.
+- **Null backend** from the start: dedicated servers, tests, CI without a GPU. `Backend::Null` (`rhi/rhis/null/`): every call succeeds with valid handles (index 0 reserved for the fallbacks, as on Vulkan), Upload/Readback buffers have real CPU memory, command lists record nothing, and swapchains need no window (`NativeWindowType::None`). It keeps the Vulkan backend's handle, usage and size asserts and its leak checks at shutdown, so misuse still fails headless. It pairs with the headless platform (`DisplayBackend::Headless`). CI runs `lmao_sandbox --null --frames 100` on every runner.
 - The **render graph** declares per-pass reads/writes and emits abstract `ResourceState` transitions; backends map them to real barriers (or ignore them).
 
 Sketch of the interface:
@@ -160,7 +160,7 @@ Slang, compiled offline by the cooker to SPIR-V, DXIL, MSL, GLSL or WGSL per bac
 Right-handed, Y-up, column-major, depth 0..1, reverse-Z with `D32_SFLOAT`. Each backend fixes clip-space differences in one place (Vulkan: negative viewport height; GL: `glClipControl(GL_UPPER_LEFT, GL_ZERO_TO_ONE)`). See [decisions/0005](decisions/0005-coordinate-conventions.md).
 
 ## Platform layer
-`core/platform/` defines Window, Input, FileSystem, Time, Threads, DynamicLibrary, Clipboard, Dialogs, CrashHandler and Sockets. `paths.h` returns well-known folders as UTF-8: `GetExecutableDirectory`, `GetUserDataDirectory` and `GetUserCacheDirectory` (`%LOCALAPPDATA%\<app>[\Cache]`, or the XDG data and cache folders). GLFW is one backend (Windows, Linux, macOS); native backends come later for mobile and consoles. The window exposes native handles (`HWND`, `wl_surface*`, `CAMetalLayer*`, …) for surface creation, and is created after the RHI backend is chosen (GLFW needs `GLFW_NO_API` except for GL).
+`core/platform/` defines Window, Input, FileSystem, Time, Threads, DynamicLibrary, Clipboard, Dialogs, CrashHandler and Sockets. `DisplayBackend::Headless` is a platform without a display (no GLFW): windows exist only in memory, with a fixed size and a `None` native handle, and no input events arrive. `paths.h` returns well-known folders as UTF-8: `GetExecutableDirectory`, `GetUserDataDirectory` and `GetUserCacheDirectory` (`%LOCALAPPDATA%\<app>[\Cache]`, or the XDG data and cache folders). GLFW is one backend (Windows, Linux, macOS); native backends come later for mobile and consoles. The window exposes native handles (`HWND`, `wl_surface*`, `CAMetalLayer*`, …) for surface creation, and is created after the RHI backend is chosen (GLFW needs `GLFW_NO_API` except for GL).
 
 Cross-platform rules: virtual paths with `/` and case-sensitive matching, UTF-8 internally, little-endian versioned asset formats, builds on MSVC/clang-cl and GCC/Clang from M0.
 

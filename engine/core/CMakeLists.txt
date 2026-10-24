@@ -20,6 +20,8 @@ add_library(lmao_core STATIC
     platform/platforms/glfw/glfw_native.h
     platform/platforms/glfw/glfw_native.cpp
     platform/platforms/glfw/glfw_platform.cpp
+    platform/platforms/headless/headless_platform.h
+    platform/platforms/headless/headless_platform.cpp
     profile/profile.h
 )
 add_library(Lmao::core ALIAS lmao_core)

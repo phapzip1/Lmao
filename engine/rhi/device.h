@@ -1,7 +1,7 @@
 #pragma once
 
 // GPU device: the entry point to the RHI. No backend type appears in this interface; each
-// backend lives in its own target under rhi/rhis/ (vulkan/, later d3d12/ and null/) and is
+// backend lives in its own target under rhi/rhis/ (vulkan/, null/, later d3d12/) and is
 // chosen at runtime.
 //
 //     auto device = Rhi::Device::Create({.ApplicationName = "Game"});
@@ -26,7 +26,8 @@ namespace Lmao::Rhi
 
     enum class Backend : uint8_t
     {
-        Vulkan
+        Vulkan,
+        Null // no GPU: every call succeeds, nothing is recorded or presented (headless runs)
     };
 
     enum class AdapterType : uint8_t
@@ -172,6 +173,8 @@ namespace Lmao::Rhi
         {
         case Backend::Vulkan:
             return "Vulkan";
+        case Backend::Null:
+            return "Null";
         }
         return "Unknown";
     }

@@ -416,6 +416,7 @@ namespace
 int main(int argc, char **argv)
 {
     bool gpu_validation = false;
+    Rhi::Backend backend = Rhi::Backend::Vulkan;
     uint64_t frame_limit = 0; // --frames N: quit cleanly after N frames (smoke tests); 0 = run until closed
     DisplayBackend display = DisplayBackend::Auto;
     std::string model_path = LMAO_ASSET_DIR "/external/glTF-Sample-Assets/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb";
@@ -426,6 +427,11 @@ int main(int argc, char **argv)
             gpu_validation = true;
         else if (argument == "--x11")
             display = DisplayBackend::X11;
+        else if (argument == "--null") // headless: null RHI, no display (CI: --null --frames 100)
+        {
+            backend = Rhi::Backend::Null;
+            display = DisplayBackend::Headless;
+        }
         else if (argument == "--model" && i + 1 < argc)
             model_path = argv[++i];
         else if (argument == "--frames" && i + 1 < argc)
@@ -447,6 +453,7 @@ int main(int argc, char **argv)
 
         const std::string cache_directory = GetUserCacheDirectory("Lmao");
         auto device = Rhi::Device::Create({
+            .Api = backend,
             .ApplicationName = "Lmao Sandbox",
             .GpuValidation = gpu_validation,
             .PipelineCacheDirectory = cache_directory,

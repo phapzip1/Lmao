@@ -27,7 +27,8 @@ namespace Lmao
     {
         Auto,   // the backend's choice (Wayland on Wayland sessions)
         X11,    // Linux only; falls back to Auto elsewhere
-        Wayland // Linux only; falls back to Auto elsewhere
+        Wayland, // Linux only; falls back to Auto elsewhere
+        Headless // no display at all (CI, tools): windows exist only in memory, no input events
     };
 
     struct PlatformDesc
@@ -47,7 +48,8 @@ namespace Lmao
     class Platform
     {
     public:
-        // Creates the platform backend built into this binary (GLFW for now). nullptr on failure.
+        // Creates the platform backend built into this binary (GLFW for now), or the headless one
+        // for DisplayBackend::Headless. nullptr on failure.
         static std::unique_ptr<Platform> Create(const PlatformDesc &desc = {});
 
         virtual ~Platform() = default;

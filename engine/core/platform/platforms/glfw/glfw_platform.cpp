@@ -5,6 +5,7 @@
 #include "core/assert/assert.h"
 #include "core/log/log.h"
 #include "core/platform/platforms/glfw/glfw_native.h"
+#include "core/platform/platforms/headless/headless_platform.h"
 #include "core/profile/profile.h"
 
 #include <GLFW/glfw3.h>
@@ -531,6 +532,8 @@ namespace Lmao
     std::unique_ptr<Platform> Platform::Create(const PlatformDesc &desc)
     {
         LMAO_PROFILE_ZONE();
+        if (desc.Display == DisplayBackend::Headless)
+            return CreateHeadlessPlatform(); // GLFW is never initialized
         LMAO_VERIFY(!platform_exists.exchange(true), "only one Platform may exist at a time");
 
         glfwSetErrorCallback(&on_glfw_error);

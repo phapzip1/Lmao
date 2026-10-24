@@ -77,7 +77,7 @@ Rules:
 - [ ] ImGui through the RHI
 - [x] Slang shaders with the fixed binding convention; shader hot reload. `Render::PipelineLibrary` polls `.slang` modification times twice a second, reruns slangc in the background with the build's flags and swaps pipelines behind the same handles. Imports are tracked through the depfile. A compile error keeps the old pipeline and logs file:line. Off in Release / `LMAO_SHADER_HOT_RELOAD=OFF`. Tested on Linux: edit, syntax error, fix, edit of `common/bindless.slang` (~0.5 s per reload, no validation messages). Windows run still pending, 2026-10-24 (decision 0011)
 - [x] Pipeline cache persisted to disk. `VkPipelineCache` loaded at device creation and saved at shutdown to `GetUserCacheDirectory("Lmao")`, one file per GPU. Header checked for vendor, device and `pipelineCacheUUID`, and stale, truncated or wrong-GPU files are dropped with a logged reason. Hits counted via creation feedback: second run 5/5 hits, Cube pipeline 17.8 ms → 0.02 ms (Linux, Mesa cache off). Windows run still pending, 2026-10-24
-- [ ] Null backend runs the same frame headless
+- [x] Null backend runs the same frame headless. `Backend::Null` + `DisplayBackend::Headless`: `lmao_sandbox --null --frames 100` runs the full sandbox frame (glTF model, ImGui, hot reload) without a GPU or display in ~0.5 s, asserting on misuse and leaks like the Vulkan backend. CI runs it on every runner and uploads logs and crash reports on failure. Tested on Linux with `DISPLAY`/`WAYLAND_DISPLAY` unset; Windows and CI runs still pending, 2026-10-24
 
 *Follow-ups from M2 work (not exit criteria):*
 - The ImGui backend creates its pipeline on the device directly, so `imgui.slang` doesn't hot reload; route it through a `PipelineLibrary` once the renderer owns one.

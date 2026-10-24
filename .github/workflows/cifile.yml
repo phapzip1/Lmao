@@ -58,3 +58,23 @@ jobs:
 
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
+
+      # Headless smoke test: null RHI backend + headless platform (runners have no GPU, and the
+      # Linux one has no display). Exercises startup, resource creation, ImGui, the frame loop
+      # and shutdown, where the null backend asserts on misuse and leaks (Debug builds).
+      - name: Run sandbox headless (100 frames)
+        shell: bash
+        run: |
+          exe=build/${{ matrix.preset }}/game/sandbox/lmao_sandbox
+          if [ "$RUNNER_OS" = "Windows" ]; then exe="$exe.exe"; fi
+          "$exe" --null --frames 100
+
+      - name: Upload sandbox logs and crash reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-logs-${{ matrix.preset }}
+          path: |
+            logs/
+            crashes/
+          if-no-files-found: ignore
