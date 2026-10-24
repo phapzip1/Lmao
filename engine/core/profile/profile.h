@@ -8,10 +8,10 @@
 
 #include <tracy/Tracy.hpp>
 
-#define LMAO_PROFILE_ZONE() ZoneScoped                    // zone named after the enclosing function
+#define LMAO_PROFILE_ZONE() ZoneScoped // zone named after the enclosing function
 #define LMAO_PROFILE_ZONE_NAMED(name) ZoneScopedN(name)
 #define LMAO_PROFILE_ZONE_COLOR(name, rgb) ZoneScopedNC(name, rgb) // rgb: 0xRRGGBB
-#define LMAO_PROFILE_ZONE_TEXT(text, size) ZoneText(text, size)   // attach runtime text to the current zone
+#define LMAO_PROFILE_ZONE_TEXT(text, size) ZoneText(text, size)    // attach runtime text to the current zone
 
 #define LMAO_PROFILE_FRAME() FrameMark // call once at the end of every frame
 #define LMAO_PROFILE_FRAME_NAMED(name) FrameMarkNamed(name)

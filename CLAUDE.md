@@ -7,7 +7,7 @@ C++20 game engine. Vulkan first (D3D12, Metal, WebGPU later), GLFW as one platfo
 
 ## Hard rules
 - **Dependencies are git submodules in `third_party/`.** No vcpkg, Conan or FetchContent. Never edit files inside a submodule. Use the `add-dependency` skill.
-- **No backend types outside their backend.** `vulkan.h` only in `rhi_vulkan/`, `d3d12.h` only in `rhi_d3d12/`. The renderer talks to `rhi::Device` / `rhi::CommandList` only.
+- **No backend types outside their backend.** Backends live in `engine/rhi/rhis/<api>/`: `vulkan.h` only in `rhis/vulkan/`, `d3d12.h` only in `rhis/d3d12/`. The renderer talks to `Rhi::Device` / `Rhi::CommandList` only.
 - **Handles, not pointers** for resources, entities and assets (index + generation).
 - Render passes declare reads and writes; the render graph inserts barriers. No hand-written barriers in renderer code.
 - The audio thread never locks, allocates or does IO.

@@ -3,7 +3,7 @@
 | # | Name | Status | Started | Done | Tag |
 |---|------|--------|---------|------|-----|
 | M0 | Foundation | ✅ Done | 2026-10-21 |2026-10-24|[M0](https://github.com/phapzip1/Lmao/releases/tag/M0)|
-| M1 | Vulkan bootstrap | ⏳ Planned | | | |
+| M1 | Vulkan bootstrap | ✅ Done  |2026-10-24|2026-10-24|[M1](https://github.com/phapzip1/Lmao/releases/tag/M1)|
 | M2 | Render core | ⏳ Planned | | | |
 | M3 | Memory + jobs | ⏳ Planned | | | |
 | M4 | Scene + assets | ⏳ Planned | | | |
@@ -65,11 +65,11 @@ Rules:
 ## Exit criteria for later milestones
 
 **M1 — Vulkan bootstrap**
-- [ ] Instance + debug messenger; validation errors break into the debugger
-- [ ] Device selection requiring Vulkan 1.3 features
-- [ ] Swapchain + 2 frames in flight, one render-finished semaphore per swapchain image
-- [ ] Triangle rendered through `rhi::Device` (no Vulkan types outside `rhi_vulkan/`)
-- [ ] Survives resize and minimize with zero validation or sync-validation messages
+- [x] Instance + debug messenger; validation errors break into the debugger. Tested on Windows by drawing without `SetScissor`: the dynamic-scissor error broke at `LMAO_DEBUG_BREAK()` in the messenger callback, 2026-10-24
+- [x] Device selection requiring Vulkan 1.3 features. Picks the GTX 1650 and rejects the AMD iGPU (Vulkan 1.2 only), 2026-10-24
+- [x] Swapchain + 2 frames in flight, one render-finished semaphore per swapchain image. Two frame slots paced by a timeline semaphore; acquire semaphore per frame, render-finished semaphore per image. Runs clean on Windows, X11 and Wayland, 2026-10-24
+- [x] Triangle rendered through `Rhi::Device` (no Vulkan types outside `rhi/rhis/vulkan/`). Slang shader (embedded SPIR-V), `CreateGraphicsPipeline` + `Draw`; verified on Wayland and X11, Windows run still pending, 2026-10-24
+- [x] Survives resize and minimize with zero validation or sync-validation messages. Sync validation on via `VK_EXT_layer_settings`; resize, minimize/restore and vsync toggling clean on Windows and X11, 2026-10-24
 
 **M2 — Render core**
 - [ ] VMA, staging uploads, bindless descriptors

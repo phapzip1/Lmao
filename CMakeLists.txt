@@ -27,6 +27,7 @@ set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(LmaoWarnings)
+include(LmaoShaders)
 
 add_subdirectory(third_party SYSTEM)
 

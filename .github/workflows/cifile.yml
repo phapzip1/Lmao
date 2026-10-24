@@ -40,6 +40,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build pkg-config libwayland-dev libxkbcommon-dev xorg-dev
 
+      - name: Fetch prebuilt tools (slangc)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            powershell -ExecutionPolicy Bypass -File scripts/setup.ps1
+          else
+            scripts/setup.sh
+          fi
+
       - name: Set up MSVC developer environment
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
