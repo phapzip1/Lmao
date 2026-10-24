@@ -171,6 +171,7 @@ namespace Lmao::Rhi::Vulkan
         const std::string fragment_entry(desc.Fragment.EntryPoint);
 
         VkPipeline pipeline = VK_NULL_HANDLE;
+        std::string cache_note; // " in 1.23 ms (cache hit)" when the driver gives feedback
         if (vertex_module != VK_NULL_HANDLE && (fragment_module != VK_NULL_HANDLE || !has_fragment))
         {
             const VkPipelineShaderStageCreateInfo stages[] = {
@@ -235,8 +236,17 @@ namespace Lmao::Rhi::Vulkan
                 .dynamicStateCount = static_cast<uint32_t>(std::size(dynamic_states)),
                 .pDynamicStates = dynamic_states,
             };
+            // Reports whether the driver found the pipeline in mPipelineCache. Drivers with their own
+            // shader disk cache (Mesa, NVIDIA) also report hits from it, even with an empty
+            // mPipelineCache: MESA_SHADER_CACHE_DISABLE=true / __GL_SHADER_DISK_CACHE=0 to test ours.
+            VkPipelineCreationFeedback feedback{};
+            VkPipelineCreationFeedbackCreateInfo feedback_info{
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
+                .pPipelineCreationFeedback = &feedback,
+            };
             const VkPipelineRenderingCreateInfo rendering{
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+                .pNext = &feedback_info,
                 .colorAttachmentCount = static_cast<uint32_t>(color_formats.size()),
                 .pColorAttachmentFormats = color_formats.data(),
                 .depthAttachmentFormat = depth_format, // UNDEFINED when there is no depth attachment
@@ -257,10 +267,16 @@ namespace Lmao::Rhi::Vulkan
                 .pDynamicState = &dynamic,
                 .layout = mPipelineLayout,
             };
-            // TODO(M2): a VkPipelineCache persisted to disk.
-            if (!Check(vkCreateGraphicsPipelines(mDevice, VK_NULL_HANDLE, 1, &create_info, nullptr, &pipeline),
+            if (!Check(vkCreateGraphicsPipelines(mDevice, mPipelineCache, 1, &create_info, nullptr, &pipeline),
                        "vkCreateGraphicsPipelines"))
                 pipeline = VK_NULL_HANDLE;
+            else if (feedback.flags & VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT)
+            {
+                const bool hit = feedback.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT;
+                ++(hit ? mPipelineCacheHits : mPipelineCacheMisses);
+                cache_note = fmt::format(" in {:.2f} ms ({})", static_cast<double>(feedback.duration) / 1e6,
+                                         hit ? "cache hit" : "cache miss");
+            }
         }
 
         // Modules are only needed while the pipeline is created.
@@ -275,7 +291,7 @@ namespace Lmao::Rhi::Vulkan
             return {};
         }
         SetName(VK_OBJECT_TYPE_PIPELINE, pipeline, name.c_str());
-        LMAO_LOG_DEBUG(LogChannel(), "Created pipeline '{}'", name);
+        LMAO_LOG_DEBUG(LogChannel(), "Created pipeline '{}'{}", name, cache_note);
         return mPipelines.Insert({pipeline});
     }
 

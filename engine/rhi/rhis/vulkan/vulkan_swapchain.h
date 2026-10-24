@@ -3,15 +3,18 @@
 // Vulkan implementation of Rhi::Swapchain. Internal to rhi/rhis/vulkan/.
 //
 // Synchronization (docs: M1 exit criteria):
-// - The device owns one "image acquired" semaphore per frame in flight; Acquire signals it.
+// - Each swapchain owns one "image acquired" semaphore per frame in flight; Acquire signals it
+//   and the frame's submit waits on it (several swapchains: several waits).
 // - The swapchain owns one "render finished" semaphore per swapchain image; the frame's submit
 //   signals it and Present waits on it. Per image, not per frame: a present semaphore may only
 //   be reused once that image has been acquired again.
 
 #include "rhi/rhis/vulkan/vulkan_common.h"
 #include "rhi/rhis/vulkan/vulkan_surface.h"
+#include "rhi/device.h"
 #include "rhi/swapchain.h"
 
+#include <array>
 #include <memory>
 #include <vector>
 
@@ -34,12 +37,15 @@ namespace Lmao::Rhi::Vulkan
         UVec2 GetSize() const override { return UVec2(mExtent.width, mExtent.height); }
         Format GetFormat() const override { return mFormat; }
         uint32_t GetImageCount() const override { return static_cast<uint32_t>(mImages.size()); }
+        bool IsAcquired() const override { return mCurrentImage < mImages.size(); }
         TextureHandle GetCurrentTexture() const override;
 
         // Backend internals
-        // Recreates the swapchain if needed, then acquires the next image, signaling `acquired`.
-        // false: skip this frame (`acquired` is not signaled).
-        bool Acquire(VkSemaphore acquired);
+        // Recreates the swapchain if needed, then acquires the next image, signaling this frame
+        // slot's acquire semaphore. false: not presenting this frame (nothing signaled).
+        bool Acquire(uint32_t frame_slot);
+        // The semaphore the frame's submit must wait on (valid after a successful Acquire).
+        VkSemaphore GetAcquireSemaphore() const { return mAcquireSemaphores[mAcquireSlot]; }
         // Semaphore the frame's submit must signal for the acquired image.
         VkSemaphore GetRenderFinishedSemaphore() const;
         void Present(VkQueue queue);
@@ -80,6 +86,8 @@ namespace Lmao::Rhi::Vulkan
         std::vector<Image> mImages;
         uint32_t mCurrentImage = UINT32_MAX; // valid between Acquire and Present
         uint32_t mGeneration = 0;            // increments on every recreation, for debug names
+        std::array<VkSemaphore, Device::MaxFramesInFlight> mAcquireSemaphores{};
+        uint32_t mAcquireSlot = 0;
     };
 
 } // namespace Lmao::Rhi::Vulkan

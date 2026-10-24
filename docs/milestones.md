@@ -76,7 +76,7 @@ Rules:
 - [ ] glTF model rendered with textures, camera and depth (reverse-Z)
 - [ ] ImGui through the RHI
 - [ ] Slang shaders with the fixed binding convention; shader hot reload
-- [ ] Pipeline cache persisted to disk
+- [x] Pipeline cache persisted to disk. `VkPipelineCache` loaded at device creation and saved at shutdown to `GetUserCacheDirectory("Lmao")`, one file per GPU. Header checked for vendor, device and `pipelineCacheUUID`, and stale, truncated or wrong-GPU files are dropped with a logged reason. Hits counted via creation feedback: second run 5/5 hits, Cube pipeline 17.8 ms → 0.02 ms (Linux, Mesa cache off). Windows run still pending, 2026-10-24
 - [ ] Null backend runs the same frame headless
 
 *Follow-ups from M2 work (not exit criteria):*

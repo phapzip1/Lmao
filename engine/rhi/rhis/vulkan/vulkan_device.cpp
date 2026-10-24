@@ -270,7 +270,7 @@ namespace Lmao::Rhi::Vulkan
             LMAO_LOG_INFO(LogChannel(), "Using GPU: {} ({}, driver {})", info.Name, ToString(info.Type), info.Driver);
             auto vulkan_device = std::make_unique<VulkanDevice>(std::move(instance), best.Physical, device,
                                                                 best.QueueFamily, std::move(info));
-            if (!vulkan_device->Initialize(memory_budget, desc.UploadBudgetPerFrame))
+            if (!vulkan_device->Initialize(memory_budget, desc.UploadBudgetPerFrame, desc.PipelineCacheDirectory))
                 return nullptr;
             return vulkan_device;
         }
@@ -305,6 +305,9 @@ namespace Lmao::Rhi::Vulkan
         LMAO_ASSERT(mSamplers.IsEmpty(), "{} sampler(s) still alive when the device was destroyed", mSamplers.Size());
         if (mPipelineLayout != VK_NULL_HANDLE)
             vkDestroyPipelineLayout(mDevice, mPipelineLayout, nullptr);
+        save_pipeline_cache();
+        if (mPipelineCache != VK_NULL_HANDLE)
+            vkDestroyPipelineCache(mDevice, mPipelineCache, nullptr);
         destroy_frame_resources();
         if (mFramePool != VK_NULL_HANDLE)
             vkDestroyDescriptorPool(mDevice, mFramePool, nullptr); // frees the per-frame sets
@@ -326,7 +329,8 @@ namespace Lmao::Rhi::Vulkan
         Check(vkDeviceWaitIdle(mDevice), "vkDeviceWaitIdle");
     }
 
-    bool VulkanDevice::Initialize(bool memory_budget, uint64_t upload_budget_per_frame)
+    bool VulkanDevice::Initialize(bool memory_budget, uint64_t upload_budget_per_frame,
+                                  std::string_view pipeline_cache_directory)
     {
         // The budget must fit the upload ring with room left for in-frame CommandList::Upload*.
         mUploadBudget = std::clamp<uint64_t>(upload_budget_per_frame, 64 * 1024, UploadRingSize / 2);
@@ -350,6 +354,8 @@ namespace Lmao::Rhi::Vulkan
         if (!Check(vkCreatePipelineLayout(mDevice, &layout_info, nullptr, &mPipelineLayout), "vkCreatePipelineLayout"))
             return false;
         SetName(VK_OBJECT_TYPE_PIPELINE_LAYOUT, mPipelineLayout, "Global pipeline layout");
+        if (!create_pipeline_cache(pipeline_cache_directory, properties.properties))
+            return false;
 
         VkSemaphoreTypeCreateInfo timeline_type{
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
@@ -381,9 +387,6 @@ namespace Lmao::Rhi::Vulkan
             if (!Check(vkAllocateCommandBuffers(mDevice, &buffer_info, &frame.command_buffer), "vkAllocateCommandBuffers"))
                 return false;
 
-            const VkSemaphoreCreateInfo semaphore_info{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-            if (!Check(vkCreateSemaphore(mDevice, &semaphore_info, nullptr, &frame.image_acquired), "vkCreateSemaphore"))
-                return false;
 
             const VkBufferCreateInfo upload_info{
                 .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -410,7 +413,6 @@ namespace Lmao::Rhi::Vulkan
             vmaSetAllocationName(mAllocator, frame.upload_allocation, (prefix + " upload ring").c_str());
             SetName(VK_OBJECT_TYPE_COMMAND_POOL, frame.command_pool, (prefix + " command pool").c_str());
             SetName(VK_OBJECT_TYPE_COMMAND_BUFFER, frame.command_buffer, (prefix + " command buffer").c_str());
-            SetName(VK_OBJECT_TYPE_SEMAPHORE, frame.image_acquired, (prefix + " image acquired").c_str());
         }
         return create_fallbacks();
     }
@@ -419,8 +421,6 @@ namespace Lmao::Rhi::Vulkan
     {
         for (Frame &frame : mFrames)
         {
-            if (frame.image_acquired != VK_NULL_HANDLE)
-                vkDestroySemaphore(mDevice, frame.image_acquired, nullptr);
             if (frame.command_pool != VK_NULL_HANDLE)
                 vkDestroyCommandPool(mDevice, frame.command_pool, nullptr); // frees its command buffer
             if (frame.upload_buffer != VK_NULL_HANDLE)
@@ -461,7 +461,7 @@ namespace Lmao::Rhi::Vulkan
     void VulkanDevice::defer_destroy(PendingDestroy pending)
     {
         // Submitted frames may still use the objects, and so may the frame being recorded right now.
-        pending.frame = mFrameSwapchain ? mSubmittedFrames + 1 : mSubmittedFrames;
+        pending.frame = mRecording ? mSubmittedFrames + 1 : mSubmittedFrames;
         mPendingDestroys.push_back(pending);
     }
 
@@ -512,14 +512,14 @@ namespace Lmao::Rhi::Vulkan
         return VulkanSwapchain::Create(*this, desc);
     }
 
-    CommandList *VulkanDevice::BeginFrame(Swapchain &swapchain)
+    CommandList *VulkanDevice::BeginFrame(std::span<Swapchain *const> swapchains)
     {
         LMAO_PROFILE_ZONE();
-        LMAO_ASSERT(mFrameSwapchain == nullptr, "BeginFrame called twice without EndFrame");
+        LMAO_ASSERT(!mRecording, "BeginFrame called twice without EndFrame");
         Frame &frame = mFrames[mFrameIndex];
 
         {
-            // The GPU must be done with this slot's command buffer and acquire semaphore.
+            // The GPU must be done with this slot's command buffer and acquire semaphores.
             LMAO_PROFILE_ZONE_NAMED("Wait for frame slot");
             const VkSemaphoreWaitInfo wait_info{
                 .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
@@ -533,13 +533,19 @@ namespace Lmao::Rhi::Vulkan
 
         destroy_pending(false);
 
-        auto &vulkan_swapchain = static_cast<VulkanSwapchain &>(swapchain);
-        if (!vulkan_swapchain.Acquire(frame.image_acquired))
-            return nullptr;
+        mFrameSwapchains.clear();
+        for (Swapchain *swapchain : swapchains)
+        {
+            auto *vulkan_swapchain = static_cast<VulkanSwapchain *>(swapchain);
+            if (vulkan_swapchain && vulkan_swapchain->Acquire(mFrameIndex))
+                mFrameSwapchains.push_back(vulkan_swapchain);
+        }
+        if (mFrameSwapchains.empty())
+            return nullptr; // nothing to present (e.g. all minimized): the slot isn't used
 
         Check(vkResetCommandPool(mDevice, frame.command_pool, 0), "vkResetCommandPool");
         frame.upload_used = 0; // the GPU has finished the copies that read it
-        mFrameSwapchain = &vulkan_swapchain; // before recording: staging allocation needs it
+        mRecording = true;     // before recording: staging allocation needs it
         mCommandList.Begin(frame.command_buffer);
         drain_upload_queue();
         return &mCommandList;
@@ -548,54 +554,61 @@ namespace Lmao::Rhi::Vulkan
     void VulkanDevice::EndFrame()
     {
         LMAO_PROFILE_ZONE();
-        LMAO_ASSERT(mFrameSwapchain != nullptr, "EndFrame without a successful BeginFrame");
+        LMAO_ASSERT(mRecording, "EndFrame without a successful BeginFrame");
         Frame &frame = mFrames[mFrameIndex];
 
         LMAO_PROFILE_PLOT("Upload ring (KiB)", static_cast<double>(frame.upload_used) / 1024.0);
-        mCommandList.TransitionForPresent(mFrameSwapchain->GetCurrentTexture());
+        for (VulkanSwapchain *swapchain : mFrameSwapchains)
+            mCommandList.TransitionForPresent(swapchain->GetCurrentTexture());
         mCommandList.End();
 
-        const VkSemaphoreSubmitInfo wait{
-            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-            .semaphore = frame.image_acquired,
-            .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, // first use of the image
-        };
+        // Wait for every acquired image; signal each image's render-finished semaphore and the timeline.
+        std::vector<VkSemaphoreSubmitInfo> waits;
+        std::vector<VkSemaphoreSubmitInfo> signals;
+        for (VulkanSwapchain *swapchain : mFrameSwapchains)
+        {
+            waits.push_back({
+                .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                .semaphore = swapchain->GetAcquireSemaphore(),
+                .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, // first use of the image
+            });
+            signals.push_back({
+                .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                .semaphore = swapchain->GetRenderFinishedSemaphore(),
+                .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            });
+        }
         const uint64_t frame_value = mSubmittedFrames + 1;
-        const VkSemaphoreSubmitInfo signals[] = {
-            {
-                .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-                .semaphore = mFrameSwapchain->GetRenderFinishedSemaphore(),
-                .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-            },
-            {
-                .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-                .semaphore = mFrameTimeline,
-                .value = frame_value,
-                .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-            },
-        };
+        signals.push_back({
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            .semaphore = mFrameTimeline,
+            .value = frame_value,
+            .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        });
         const VkCommandBufferSubmitInfo command_buffer{
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
             .commandBuffer = frame.command_buffer,
         };
         const VkSubmitInfo2 submit{
             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-            .waitSemaphoreInfoCount = 1,
-            .pWaitSemaphoreInfos = &wait,
+            .waitSemaphoreInfoCount = static_cast<uint32_t>(waits.size()),
+            .pWaitSemaphoreInfos = waits.data(),
             .commandBufferInfoCount = 1,
             .pCommandBufferInfos = &command_buffer,
-            .signalSemaphoreInfoCount = static_cast<uint32_t>(std::size(signals)),
-            .pSignalSemaphoreInfos = signals,
+            .signalSemaphoreInfoCount = static_cast<uint32_t>(signals.size()),
+            .pSignalSemaphoreInfos = signals.data(),
         };
         if (Check(vkQueueSubmit2(mGraphicsQueue, 1, &submit, VK_NULL_HANDLE), "vkQueueSubmit2"))
         {
             mSubmittedFrames = frame_value;
             frame.timeline_value = frame_value;
-            mFrameSwapchain->Present(mGraphicsQueue);
+            for (VulkanSwapchain *swapchain : mFrameSwapchains)
+                swapchain->Present(mGraphicsQueue);
         }
         // On failure (device lost) nothing was submitted; the slot's old value stays valid.
 
-        mFrameSwapchain = nullptr;
+        mFrameSwapchains.clear();
+        mRecording = false;
         mFrameIndex = (mFrameIndex + 1) % MaxFramesInFlight;
     }
 

@@ -12,6 +12,7 @@ add_library(lmao_core STATIC
     platform/event.h
     platform/input.h
     platform/input.cpp
+    platform/paths.h
     platform/platform.h
     platform/time.h
     platform/window.h
@@ -23,10 +24,14 @@ add_library(lmao_core STATIC
 add_library(Lmao::core ALIAS lmao_core)
 
 if(WIN32)
-    target_sources(lmao_core PRIVATE platform/platforms/win32/crash_handler_win32.cpp)
-    target_link_libraries(lmao_core PRIVATE dbghelp)
+    target_sources(lmao_core PRIVATE
+        platform/platforms/win32/crash_handler_win32.cpp
+        platform/platforms/win32/paths_win32.cpp)
+    target_link_libraries(lmao_core PRIVATE dbghelp shell32 ole32) # ole32: CoTaskMemFree
 else()
-    target_sources(lmao_core PRIVATE platform/platforms/posix/crash_handler_posix.cpp)
+    target_sources(lmao_core PRIVATE
+        platform/platforms/posix/crash_handler_posix.cpp
+        platform/platforms/posix/paths_posix.cpp)
 endif()
 
 # Headers are included as "core/<module>/<file>.h".

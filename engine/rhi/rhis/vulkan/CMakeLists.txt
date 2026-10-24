@@ -13,6 +13,7 @@ add_library(lmao_rhi_vulkan STATIC
     vulkan_instance.cpp
     vulkan_memory.cpp # VMA_IMPLEMENTATION
     vulkan_pipeline.cpp
+    vulkan_pipeline_cache.cpp
     vulkan_resources.cpp
     vulkan_surface.h
     vulkan_surface.cpp # the only file that includes window-system headers

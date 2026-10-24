@@ -13,11 +13,14 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Lmao::Rhi::Vulkan
@@ -129,7 +132,8 @@ namespace Lmao::Rhi::Vulkan
         uint64_t GetPendingUploadBytes() const override { return mQueuedBytes; }
         PipelineHandle CreateGraphicsPipeline(const GraphicsPipelineDesc &desc) override;
         void DestroyPipeline(PipelineHandle pipeline) override;
-        CommandList *BeginFrame(Swapchain &swapchain) override;
+        using Device::BeginFrame;
+        CommandList *BeginFrame(std::span<Swapchain *const> swapchains) override;
         void EndFrame() override;
 
         // Backend internals
@@ -162,7 +166,9 @@ namespace Lmao::Rhi::Vulkan
 
         // Called once by CreateDevice. false on failure (the reason is logged).
         // memory_budget: VK_EXT_memory_budget is enabled on the device.
-        bool Initialize(bool memory_budget, uint64_t upload_budget_per_frame);
+        // pipeline_cache_directory: where the pipeline cache is loaded from and saved to; empty
+        // keeps it in memory only.
+        bool Initialize(bool memory_budget, uint64_t upload_budget_per_frame, std::string_view pipeline_cache_directory);
 
         void OnSwapchainCreated() { ++mSwapchainCount; }
         void OnSwapchainDestroyed() { --mSwapchainCount; }
@@ -189,7 +195,6 @@ namespace Lmao::Rhi::Vulkan
         {
             VkCommandPool command_pool = VK_NULL_HANDLE;
             VkCommandBuffer command_buffer = VK_NULL_HANDLE;
-            VkSemaphore image_acquired = VK_NULL_HANDLE; // binary: signaled by vkAcquireNextImageKHR
             uint64_t timeline_value = 0;
 
             // Upload ring: bump-allocated while recording, reset when the slot is reused.
@@ -234,6 +239,8 @@ namespace Lmao::Rhi::Vulkan
         // a zeroed buffer and a linear sampler. Every slot starts out (and ends up, when freed)
         // pointing at them, so no index ever reads an undefined descriptor.
         bool create_fallbacks();
+        bool create_pipeline_cache(std::string_view directory, const VkPhysicalDeviceProperties &properties);
+        void save_pipeline_cache(); // logs the hit count; writes the file if there is a path
         void point_slots_at_fallback(uint32_t binding, uint32_t first, uint32_t count);
         // Records and runs one command buffer outside the frame loop, waiting for it (startup only).
         bool submit_immediately(const std::function<void(VkCommandBuffer)> &record);
@@ -279,7 +286,8 @@ namespace Lmao::Rhi::Vulkan
         uint32_t mFrameIndex = 0;
         VkSemaphore mFrameTimeline = VK_NULL_HANDLE; // counts submitted frames
         uint64_t mSubmittedFrames = 0;
-        VulkanSwapchain *mFrameSwapchain = nullptr; // set between BeginFrame and EndFrame
+        std::vector<VulkanSwapchain *> mFrameSwapchains; // acquired this frame, between BeginFrame and EndFrame
+        bool mRecording = false;                         // between a successful BeginFrame and EndFrame
         VulkanCommandList mCommandList;
 
         SlotMap<Texture, TextureTag> mTextures;
@@ -287,6 +295,11 @@ namespace Lmao::Rhi::Vulkan
         SlotMap<Buffer, BufferTag> mBuffers;
         SlotMap<Sampler, SamplerTag> mSamplers;
         VkPipelineLayout mPipelineLayout = VK_NULL_HANDLE;
+        VkPipelineCache mPipelineCache = VK_NULL_HANDLE;
+        std::filesystem::path mPipelineCachePath; // empty: not persisted
+        // From VkPipelineCreationFeedback; pipelines the driver doesn't report on count as neither.
+        std::atomic<uint32_t> mPipelineCacheHits = 0;
+        std::atomic<uint32_t> mPipelineCacheMisses = 0;
         BindlessCapacity mBindlessCapacity;
         VkDescriptorSetLayout mBindlessLayout = VK_NULL_HANDLE; // set 0
         VkDescriptorSetLayout mFrameLayout = VK_NULL_HANDLE;    // set 1

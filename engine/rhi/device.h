@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -65,6 +66,10 @@ namespace Lmao::Rhi
         // Most bytes of queued uploads (QueueUpload) copied per frame; bigger loads are spread
         // over several frames so none of them stalls and staging memory stays bounded.
         uint64_t UploadBudgetPerFrame = 16ull << 20;
+        // UTF-8 folder for the pipeline cache, loaded at creation and saved when the device is
+        // destroyed (one file per GPU). Empty: pipelines are still cached, but only in memory.
+        // Usually GetUserCacheDirectory(<application>).
+        std::string_view PipelineCacheDirectory;
     };
 
     class Device
@@ -140,7 +145,16 @@ namespace Lmao::Rhi
         // Waits until the GPU is done with the frame slot being reused, acquires the swapchain's
         // next image and starts recording. nullptr means "skip this frame" (minimized, or the
         // swapchain could not be recreated); don't call EndFrame then.
-        virtual CommandList *BeginFrame(Swapchain &swapchain) = 0;
+        //
+        // Several swapchains (one per window) can be presented in one frame: each that can
+        // present (minimized ones are skipped: check Swapchain::IsAcquired) gets an image, and
+        // nullptr only means none could. BeginFrame(*swapchain) for the usual single window.
+        virtual CommandList *BeginFrame(std::span<Swapchain *const> swapchains) = 0;
+        CommandList *BeginFrame(Swapchain &swapchain)
+        {
+            Swapchain *const one[] = {&swapchain};
+            return BeginFrame(one);
+        }
         // Submits the frame's commands and presents the swapchain image.
         virtual void EndFrame() = 0;
 

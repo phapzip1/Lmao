@@ -15,6 +15,29 @@ namespace Lmao
         uint32_t Height = 720;
         bool Resizable = true;
         bool Visible = true;
+        bool Decorated = true;   // title bar and borders
+        bool Floating = false;   // always on top of other windows
+        bool Focused = true;     // take input focus when created
+        bool FocusOnShow = true; // take input focus when Show() is called
+        // Client-area position in screen coordinates; ignored where the OS places windows itself
+        // (Wayland, see Platform::SupportsWindowPositioning).
+        bool HasPosition = false;
+        IVec2 Position{0, 0};
+    };
+
+    enum class StandardCursor : uint8_t
+    {
+        Arrow,
+        TextInput,
+        Hand,
+        Crosshair,
+        ResizeHorizontal,
+        ResizeVertical,
+        ResizeNwse, // top-left <-> bottom-right
+        ResizeNesw, // top-right <-> bottom-left
+        ResizeAll,
+        NotAllowed,
+        Count
     };
 
     enum class NativeWindowType : uint8_t
@@ -65,6 +88,25 @@ namespace Lmao
         virtual void SetShouldClose(bool should_close) = 0;
 
         virtual void SetTitle(std::string_view title) = 0; // UTF-8
+
+        // Client-area position in screen coordinates. Not available everywhere (see
+        // Platform::SupportsWindowPositioning): GetPosition returns (0, 0) and SetPosition does nothing there.
+        virtual IVec2 GetPosition() const = 0;
+        virtual void SetPosition(IVec2 position) = 0;
+        virtual void SetSize(UVec2 size) = 0; // client area, screen coordinates
+
+        virtual void Show() = 0;  // for windows created with Visible = false
+        virtual void Focus() = 0; // bring to front and take input focus
+        virtual void SetOpacity(float opacity) = 0; // whole window, 0..1
+        // Mouse input goes through the window to whatever is below it (e.g. a window being dragged).
+        virtual void SetMousePassthrough(bool passthrough) = 0;
+
+        // Shape of the cursor over this window; shapes the OS lacks fall back to the arrow.
+        virtual void SetCursor(StandardCursor cursor) = 0;
+
+        // Cursor position in client-area screen coordinates, also while it is outside the window
+        // (e.g. during a drag). Not reported outside the window on Wayland.
+        virtual Vec2 GetCursorPosition() const = 0;
 
         virtual void SetCursorMode(CursorMode mode) = 0;
         virtual CursorMode GetCursorMode() const = 0;

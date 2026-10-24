@@ -82,6 +82,13 @@ namespace Lmao::Rhi::Vulkan
         : mDevice(device), mSurface(std::move(surface)), mDesiredExtent{desc.Width, desc.Height}, mVSync(desc.VSync)
     {
         mDevice.OnSwapchainCreated();
+        const VkSemaphoreCreateInfo semaphore_info{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        for (uint32_t i = 0; i < mAcquireSemaphores.size(); ++i)
+        {
+            Check(vkCreateSemaphore(mDevice.GetHandle(), &semaphore_info, nullptr, &mAcquireSemaphores[i]),
+                  "vkCreateSemaphore (acquire)");
+            mDevice.SetName(VK_OBJECT_TYPE_SEMAPHORE, mAcquireSemaphores[i], fmt::format("Swapchain acquire (frame {})", i).c_str());
+        }
     }
 
     VulkanSwapchain::~VulkanSwapchain()
@@ -90,6 +97,9 @@ namespace Lmao::Rhi::Vulkan
         destroy_images();
         if (mSwapchain != VK_NULL_HANDLE)
             vkDestroySwapchainKHR(mDevice.GetHandle(), mSwapchain, nullptr);
+        for (VkSemaphore semaphore : mAcquireSemaphores)
+            if (semaphore != VK_NULL_HANDLE)
+                vkDestroySemaphore(mDevice.GetHandle(), semaphore, nullptr);
         mSurface.reset(); // after the swapchain that uses it
         mDevice.OnSwapchainDestroyed();
     }
@@ -178,8 +188,10 @@ namespace Lmao::Rhi::Vulkan
         if (extent.width == 0 || extent.height == 0)
             return RecreateResult::Minimized; // keep mNeedsRecreate and try again next frame
 
-        // Simple and safe: nothing in flight may still reference the old images.
-        mDevice.WaitIdle();
+        // Simple and safe: nothing in flight may still reference the old images. A brand-new
+        // swapchain has none, so creating one (e.g. a new window) doesn't stall.
+        if (mSwapchain != VK_NULL_HANDLE)
+            mDevice.WaitIdle();
 
         uint32_t image_count = caps.minImageCount + 1;
         if (caps.maxImageCount != 0)
@@ -287,8 +299,10 @@ namespace Lmao::Rhi::Vulkan
         mCurrentImage = UINT32_MAX;
     }
 
-    bool VulkanSwapchain::Acquire(VkSemaphore acquired)
+    bool VulkanSwapchain::Acquire(uint32_t frame_slot)
     {
+        mAcquireSlot = frame_slot;
+        const VkSemaphore acquired = mAcquireSemaphores[frame_slot];
         LMAO_PROFILE_ZONE();
         // One retry: an out-of-date swapchain is recreated and acquired again in the same frame.
         for (int attempt = 0; attempt < 2; ++attempt)

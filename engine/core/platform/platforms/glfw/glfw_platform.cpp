@@ -10,6 +10,7 @@
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <string>
 #include <utility>
@@ -28,7 +29,31 @@ namespace Lmao
 
         void on_glfw_error(int code, const char *description)
         {
+            // Expected on some systems and handled by the caller: a cursor shape the theme lacks
+            // (falls back to the arrow), or a clipboard holding no text.
+            if (code == GLFW_CURSOR_UNAVAILABLE || code == GLFW_FORMAT_UNAVAILABLE)
+            {
+                LMAO_LOG_DEBUG(log_channel(), "GLFW: {}", description);
+                return;
+            }
             LMAO_LOG_ERROR(log_channel(), "GLFW error 0x{:X}: {}", code, description);
+        }
+
+        int to_glfw_shape(StandardCursor cursor)
+        {
+            switch (cursor)
+            {
+            case StandardCursor::TextInput: return GLFW_IBEAM_CURSOR;
+            case StandardCursor::Hand: return GLFW_POINTING_HAND_CURSOR;
+            case StandardCursor::Crosshair: return GLFW_CROSSHAIR_CURSOR;
+            case StandardCursor::ResizeHorizontal: return GLFW_RESIZE_EW_CURSOR;
+            case StandardCursor::ResizeVertical: return GLFW_RESIZE_NS_CURSOR;
+            case StandardCursor::ResizeNwse: return GLFW_RESIZE_NWSE_CURSOR;
+            case StandardCursor::ResizeNesw: return GLFW_RESIZE_NESW_CURSOR;
+            case StandardCursor::ResizeAll: return GLFW_RESIZE_ALL_CURSOR;
+            case StandardCursor::NotAllowed: return GLFW_NOT_ALLOWED_CURSOR;
+            default: return GLFW_ARROW_CURSOR;
+            }
         }
 
         Key offset_key(Key first, int offset) { return static_cast<Key>(static_cast<int>(first) + offset); }
@@ -145,6 +170,13 @@ namespace Lmao
             void WaitEvents() override;
             std::span<const Event> GetEvents() const override { return mEvents; }
             std::string_view GetName() const override { return mName; }
+            bool SupportsWindowPositioning() const override { return glfwGetPlatform() != GLFW_PLATFORM_WAYLAND; }
+            std::vector<MonitorInfo> GetMonitors() const override;
+            void SetClipboardText(std::string_view text) override;
+            std::string GetClipboardText() const override;
+
+            // nullptr: the default arrow.
+            GLFWcursor *GetCursor(StandardCursor cursor) const { return mCursors[static_cast<size_t>(cursor)]; }
 
             // Called from GLFW callbacks. Lands in the next PollEvents()/WaitEvents() batch.
             void PushEvent(Window *source, EventData data) { mPending.push_back({source, std::move(data)}); }
@@ -157,6 +189,7 @@ namespace Lmao
             std::vector<Event> mPending; // filled by callbacks
             std::string mName;
             int mWindowCount = 0;
+            std::array<GLFWcursor *, static_cast<size_t>(StandardCursor::Count)> mCursors{};
         };
 
         class GlfwWindow final : public Window
@@ -173,8 +206,25 @@ namespace Lmao
             bool ShouldClose() const override { return glfwWindowShouldClose(mHandle) != 0; }
             void SetShouldClose(bool should_close) override { glfwSetWindowShouldClose(mHandle, should_close ? GLFW_TRUE : GLFW_FALSE); }
             void SetTitle(std::string_view title) override { glfwSetWindowTitle(mHandle, std::string(title).c_str()); }
+            Vec2 GetCursorPosition() const override
+            {
+                double x = 0.0, y = 0.0;
+                glfwGetCursorPos(mHandle, &x, &y);
+                return Vec2(static_cast<float>(x), static_cast<float>(y));
+            }
             void SetCursorMode(CursorMode mode) override;
             CursorMode GetCursorMode() const override { return mCursorMode; }
+            IVec2 GetPosition() const override;
+            void SetPosition(IVec2 position) override;
+            void SetSize(UVec2 size) override;
+            void Show() override { glfwShowWindow(mHandle); }
+            void Focus() override { glfwFocusWindow(mHandle); }
+            void SetOpacity(float opacity) override { glfwSetWindowOpacity(mHandle, opacity); }
+            void SetMousePassthrough(bool passthrough) override
+            {
+                glfwSetWindowAttrib(mHandle, GLFW_MOUSE_PASSTHROUGH, passthrough ? GLFW_TRUE : GLFW_FALSE);
+            }
+            void SetCursor(StandardCursor cursor) override;
             NativeWindowHandle GetNativeHandle() const override { return Glfw::GetNativeHandle(mHandle); }
 
             GlfwPlatform &GetPlatform() { return mPlatform; }
@@ -185,6 +235,7 @@ namespace Lmao
             GlfwPlatform &mPlatform;
             GLFWwindow *mHandle;
             CursorMode mCursorMode = CursorMode::Normal;
+            StandardCursor mCursor = StandardCursor::Arrow;
         };
 
         // --- GLFW callbacks: translate and queue ----------------------------------------------
@@ -230,7 +281,17 @@ namespace Lmao
 
         void on_cursor_pos(GLFWwindow *handle, double x, double y)
         {
-            push_event(handle, MouseMoveEvent{Vec2(static_cast<float>(x), static_cast<float>(y))});
+            const Vec2 position(static_cast<float>(x), static_cast<float>(y));
+            Vec2 screen = position;
+            // Now, not when the event is processed: the window may move in between (e.g. while
+            // it is being dragged), which would skew the result.
+            if (glfwGetPlatform() != GLFW_PLATFORM_WAYLAND)
+            {
+                int window_x = 0, window_y = 0;
+                glfwGetWindowPos(handle, &window_x, &window_y);
+                screen += Vec2(static_cast<float>(window_x), static_cast<float>(window_y));
+            }
+            push_event(handle, MouseMoveEvent{position, screen});
         }
 
         void on_scroll(GLFWwindow *handle, double x, double y)
@@ -240,6 +301,8 @@ namespace Lmao
 
         void on_cursor_enter(GLFWwindow *handle, int entered) { push_event(handle, CursorEnterEvent{entered != 0}); }
 
+        void on_position(GLFWwindow *handle, int x, int y) { push_event(handle, WindowMoveEvent{IVec2(x, y)}); }
+
         // --- GlfwPlatform ---------------------------------------------------------------------
 
         GlfwPlatform::GlfwPlatform()
@@ -247,12 +310,18 @@ namespace Lmao
             int major = 0, minor = 0, revision = 0;
             glfwGetVersion(&major, &minor, &revision);
             mName = fmt::format("GLFW {}.{}.{} ({})", major, minor, revision, to_platform_name(glfwGetPlatform()));
+            // Shapes the cursor theme lacks stay nullptr and fall back to the arrow.
+            for (size_t i = 1; i < mCursors.size(); ++i)
+                mCursors[i] = glfwCreateStandardCursor(to_glfw_shape(static_cast<StandardCursor>(i)));
             LMAO_LOG_INFO(log_channel(), "Platform: {}", mName);
         }
 
         GlfwPlatform::~GlfwPlatform()
         {
             LMAO_ASSERT(mWindowCount == 0, "{} window(s) still open when the platform was destroyed", mWindowCount);
+            for (GLFWcursor *cursor : mCursors)
+                if (cursor)
+                    glfwDestroyCursor(cursor);
             glfwTerminate();
             platform_exists = false;
         }
@@ -264,6 +333,15 @@ namespace Lmao
             glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API); // the RHI creates the surface
             glfwWindowHint(GLFW_RESIZABLE, desc.Resizable ? GLFW_TRUE : GLFW_FALSE);
             glfwWindowHint(GLFW_VISIBLE, desc.Visible ? GLFW_TRUE : GLFW_FALSE);
+            glfwWindowHint(GLFW_DECORATED, desc.Decorated ? GLFW_TRUE : GLFW_FALSE);
+            glfwWindowHint(GLFW_FLOATING, desc.Floating ? GLFW_TRUE : GLFW_FALSE);
+            glfwWindowHint(GLFW_FOCUSED, desc.Focused ? GLFW_TRUE : GLFW_FALSE);
+            glfwWindowHint(GLFW_FOCUS_ON_SHOW, desc.FocusOnShow ? GLFW_TRUE : GLFW_FALSE);
+            if (desc.HasPosition && SupportsWindowPositioning())
+            {
+                glfwWindowHint(GLFW_POSITION_X, desc.Position.x);
+                glfwWindowHint(GLFW_POSITION_Y, desc.Position.y);
+            }
 
             const std::string title(desc.Title);
             GLFWwindow *handle = glfwCreateWindow(static_cast<int>(desc.Width), static_cast<int>(desc.Height),
@@ -335,6 +413,7 @@ namespace Lmao
             glfwSetCursorPosCallback(mHandle, &on_cursor_pos);
             glfwSetScrollCallback(mHandle, &on_scroll);
             glfwSetCursorEnterCallback(mHandle, &on_cursor_enter);
+            glfwSetWindowPosCallback(mHandle, &on_position);
         }
 
         void GlfwWindow::SetCursorMode(CursorMode mode)
@@ -365,6 +444,34 @@ namespace Lmao
             return UVec2(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
         }
 
+        IVec2 GlfwWindow::GetPosition() const
+        {
+            if (!mPlatform.SupportsWindowPositioning())
+                return IVec2(0, 0); // Wayland: unknown, and asking logs an error
+            int x = 0, y = 0;
+            glfwGetWindowPos(mHandle, &x, &y);
+            return IVec2(x, y);
+        }
+
+        void GlfwWindow::SetPosition(IVec2 position)
+        {
+            if (mPlatform.SupportsWindowPositioning())
+                glfwSetWindowPos(mHandle, position.x, position.y);
+        }
+
+        void GlfwWindow::SetSize(UVec2 size)
+        {
+            glfwSetWindowSize(mHandle, static_cast<int>(size.x), static_cast<int>(size.y));
+        }
+
+        void GlfwWindow::SetCursor(StandardCursor cursor)
+        {
+            if (cursor == mCursor)
+                return;
+            mCursor = cursor;
+            glfwSetCursor(mHandle, mPlatform.GetCursor(cursor)); // nullptr: the arrow
+        }
+
         Vec2 GlfwWindow::GetContentScale() const
         {
             float x = 1.0f, y = 1.0f;
@@ -372,6 +479,53 @@ namespace Lmao
             return Vec2(x, y);
         }
 
+    } // namespace
+
+    namespace
+    {
+        std::vector<MonitorInfo> GlfwPlatform::GetMonitors() const
+        {
+            int count = 0;
+            GLFWmonitor **monitors = glfwGetMonitors(&count); // the primary monitor comes first
+            std::vector<MonitorInfo> result;
+            for (int i = 0; i < count; ++i)
+            {
+                const GLFWvidmode *mode = glfwGetVideoMode(monitors[i]);
+                if (!mode)
+                    continue;
+                MonitorInfo info;
+                glfwGetMonitorPos(monitors[i], &info.Position.x, &info.Position.y);
+                info.Size = UVec2(static_cast<uint32_t>(mode->width), static_cast<uint32_t>(mode->height));
+                int x = 0, y = 0, width = 0, height = 0;
+                glfwGetMonitorWorkarea(monitors[i], &x, &y, &width, &height);
+                if (width > 0 && height > 0)
+                {
+                    info.WorkPosition = IVec2(x, y);
+                    info.WorkSize = UVec2(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+                }
+                else
+                {
+                    info.WorkPosition = info.Position;
+                    info.WorkSize = info.Size;
+                }
+                float scale_x = 1.0f, scale_y = 1.0f;
+                glfwGetMonitorContentScale(monitors[i], &scale_x, &scale_y);
+                info.ContentScale = scale_x;
+                result.push_back(info);
+            }
+            return result;
+        }
+
+        void GlfwPlatform::SetClipboardText(std::string_view text)
+        {
+            glfwSetClipboardString(nullptr, std::string(text).c_str()); // GLFW 3.4+: no window needed
+        }
+
+        std::string GlfwPlatform::GetClipboardText() const
+        {
+            const char *text = glfwGetClipboardString(nullptr);
+            return text ? std::string(text) : std::string();
+        }
     } // namespace
 
     std::unique_ptr<Platform> Platform::Create(const PlatformDesc &desc)

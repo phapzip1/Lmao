@@ -10,13 +10,16 @@
 // (Dear ImGui through the RHI: frame time, GPU, swapchain, memory, uploads, camera).
 // Camera: hold the right mouse button to look, WASD / Q / E to move, Shift faster, wheel for speed.
 //
-//   lmao_sandbox [--model <file.gltf|.glb>] [--gpu-validation]
+//   lmao_sandbox [--model <file.gltf|.glb>] [--gpu-validation] [--x11]
 //
 // The default model is DamagedHelmet from scripts/fetch_assets.sh (or .ps1).
 // --gpu-validation: GPU-assisted validation (slow; checks bindless indices in shaders).
+// --x11: on Linux, use X11 (XWayland on Wayland sessions), where ImGui windows can be dragged
+//        out of the main window; Wayland doesn't let applications position windows.
 
 #include "core/log/log.h"
 #include "core/platform/crash_handler.h"
+#include "core/platform/paths.h"
 #include "core/platform/platform.h"
 #include "core/platform/time.h"
 #include "core/profile/profile.h"
@@ -31,6 +34,8 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <optional>
 #include <span>
 #include <string>
@@ -278,7 +283,8 @@ namespace
         bool ShowDemo = false;
     };
 
-    void draw_debug_panel(PanelState &state, const FrameHistory &history, Rhi::Device &device, Rhi::Swapchain &swapchain,
+    void draw_debug_panel(PanelState &state, const FrameHistory &history, const Platform &platform,
+                          const Render::ImGuiBackend &imgui, Rhi::Device &device, Rhi::Swapchain &swapchain,
                           const Sandbox::FlyCamera &camera, const std::optional<Resource::Model> &model, size_t mesh_count)
     {
         if (!state.Visible)
@@ -336,7 +342,20 @@ namespace
                 ImGui::Text("Camera (%.2f, %.2f, %.2f), speed %.2f/s", p.x, p.y, p.z, camera.GetSpeed());
                 ImGui::TextDisabled("Hold RMB to look, WASD/QE to move, Shift faster, wheel for speed");
             }
-            ImGui::Checkbox("ImGui demo window", &state.ShowDemo);
+            if (ImGui::CollapsingHeader("UI", ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                ImGui::Text("Platform: %s", std::string(platform.GetName()).c_str());
+                if (imgui.AreViewportsEnabled())
+                {
+                    ImGui::TextUnformatted("Viewports: on (drag windows out of the main window)");
+                    // Off (ImGui's default): a window moved back inside is merged into the main
+                    // window, destroying its OS window. On: it stays a separate OS window.
+                    ImGui::Checkbox("Keep detached windows separate", &ImGui::GetIO().ConfigViewportsNoAutoMerge);
+                }
+                else
+                    ImGui::TextDisabled("Viewports: off - this display can't position windows (try --x11)");
+                ImGui::Checkbox("ImGui demo window", &state.ShowDemo);
+            }
         }
         ImGui::End();
         if (state.ShowDemo)
@@ -382,6 +401,7 @@ namespace
                        []([[maybe_unused]] const MouseMoveEvent &e) { LMAO_TRACE("Mouse at ({:.0f}, {:.0f})", e.Position.x, e.Position.y); },
                        [](const MouseScrollEvent &e) { LMAO_INFO("Scroll ({}, {})", e.Offset.x, e.Offset.y); },
                        [](const CursorEnterEvent &e) { LMAO_INFO("Cursor {} window", e.Entered ? "entered" : "left"); },
+                       [](const WindowMoveEvent &e) { LMAO_DEBUG("Window moved to ({}, {})", e.Position.x, e.Position.y); },
                    },
                    event.Data);
     }
@@ -391,14 +411,20 @@ namespace
 int main(int argc, char **argv)
 {
     bool gpu_validation = false;
+    uint64_t frame_limit = 0; // --frames N: quit cleanly after N frames (smoke tests); 0 = run until closed
+    DisplayBackend display = DisplayBackend::Auto;
     std::string model_path = LMAO_ASSET_DIR "/external/glTF-Sample-Assets/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb";
     for (int i = 1; i < argc; ++i)
     {
         const std::string_view argument(argv[i]);
         if (argument == "--gpu-validation")
             gpu_validation = true;
+        else if (argument == "--x11")
+            display = DisplayBackend::X11;
         else if (argument == "--model" && i + 1 < argc)
             model_path = argv[++i];
+        else if (argument == "--frames" && i + 1 < argc)
+            frame_limit = std::strtoull(argv[++i], nullptr, 10);
     }
 
     Log::Init({.MinLevel = Log::Level::Debug, .FilePath = "logs/sandbox.log"});
@@ -406,7 +432,7 @@ int main(int argc, char **argv)
     LMAO_PROFILE_THREAD_NAME("Main");
 
     {
-        auto platform = Platform::Create();
+        auto platform = Platform::Create({.Display = display});
         if (!platform)
             return 1;
 
@@ -414,7 +440,12 @@ int main(int argc, char **argv)
         if (!window)
             return 1;
 
-        auto device = Rhi::Device::Create({.ApplicationName = "Lmao Sandbox", .GpuValidation = gpu_validation});
+        const std::string cache_directory = GetUserCacheDirectory("Lmao");
+        auto device = Rhi::Device::Create({
+            .ApplicationName = "Lmao Sandbox",
+            .GpuValidation = gpu_validation,
+            .PipelineCacheDirectory = cache_directory,
+        });
         if (!device)
             return 1;
 
@@ -465,7 +496,7 @@ int main(int argc, char **argv)
         if (!cube || !triangle || !model_pipeline || !model_double_sided)
             return 1;
 
-        auto imgui = Render::ImGuiBackend::Create(*device, swapchain->GetFormat(), window->GetContentScale().x);
+        auto imgui = Render::ImGuiBackend::Create(*device, *platform, *window, swapchain->GetFormat());
         if (!imgui)
             return 1;
         PanelState panel{.VSync = vsync};
@@ -542,9 +573,14 @@ int main(int argc, char **argv)
 
         Stopwatch clock;
         Stopwatch frame_timer;
+        uint64_t frame_count = 0;
         while (!window->ShouldClose())
         {
-            if (window->IsMinimized())
+            if (frame_limit != 0 && frame_count++ == frame_limit)
+                break;
+            // Sleep only when nothing is on screen: ImGui windows outside the main one keep
+            // drawing while it is minimized.
+            if (window->IsMinimized() && imgui->GetViewportSwapchains().empty())
                 platform->WaitEvents();
             else
                 platform->PollEvents();
@@ -552,7 +588,9 @@ int main(int argc, char **argv)
             for (const Event &event : platform->GetEvents())
             {
                 log_event(event, *window);
-                imgui->ProcessEvent(event, *window);
+                imgui->ProcessEvent(event);
+                if (imgui->IsViewportWindow(event.Source))
+                    continue; // an ImGui window dragged out of the main one: only for the UI
 
                 // The UI gets the mouse while the cursor is over it and key presses while it has
                 // focus. Releases always reach the camera, so nothing stays held.
@@ -596,7 +634,16 @@ int main(int argc, char **argv)
             const double delta_time = frame_timer.Lap();
             frame_history.Add(static_cast<float>(delta_time * 1000.0));
             camera.Update(static_cast<float>(delta_time));
-            if (Rhi::CommandList *commands = device->BeginFrame(*swapchain))
+
+            // UI first: ending the ImGui frame may open or close viewport windows (and their swapchains).
+            imgui->NewFrame(static_cast<float>(delta_time));
+            draw_debug_panel(panel, frame_history, *platform, *imgui, *device, *swapchain, camera, model, gpu_model.Meshes.size());
+            vsync = panel.VSync; // the checkbox may have changed it
+            imgui->EndFrame();
+
+            std::vector<Rhi::Swapchain *> swapchains = imgui->GetViewportSwapchains();
+            swapchains.insert(swapchains.begin(), swapchain.get());
+            if (Rhi::CommandList *commands = device->BeginFrame(swapchains))
             {
                 if (!uploaded)
                 {
@@ -611,104 +658,105 @@ int main(int argc, char **argv)
                     uploaded = true;
                 }
 
-                const float t = static_cast<float>(clock.ElapsedSeconds());
-                // Dim, so the triangle stands out.
-                const Vec4 background(0.1f + 0.05f * std::sin(t), 0.1f + 0.05f * std::sin(t + 2.1f),
-                                      0.1f + 0.05f * std::sin(t + 4.2f), 1.0f);
-                const UVec2 size = swapchain->GetSize();
-                if (size != depth_size)
+                // The main window may be minimized while ImGui windows outside it still draw.
+                if (swapchain->IsAcquired())
                 {
-                    if (depth)
-                        device->DestroyTexture(depth);
-                    depth = device->CreateTexture({
-                        .Width = size.x,
-                        .Height = size.y,
-                        .Format = depth_format,
-                        .Usage = Rhi::TextureUsage::DepthAttachment,
-                        .DebugName = "Depth buffer",
-                    });
-                    depth_size = size;
-                }
-
-                // Perspective camera with an infinite far plane: reverse-Z keeps precision at any distance.
-                const float aspect = static_cast<float>(size.x) / static_cast<float>(size.y);
-                FrameConstants frame{};
-                frame.View = camera.GetView();
-                frame.Projection = Math::PerspectiveInfiniteReverseZ(Math::Radians(60.0f), aspect, near_plane);
-                frame.ViewProjection = frame.Projection * frame.View;
-                frame.CameraPosition = Vec4(camera.GetPosition(), 1.0f);
-                frame.Time = t;
-                frame.DeltaTime = static_cast<float>(delta_time);
-                frame.Resolution[0] = size.x;
-                frame.Resolution[1] = size.y;
-                commands->SetFrameConstants(frame);
-
-                commands->BeginMarker("Scene pass");
-                const Rhi::ColorAttachment color{.Texture = swapchain->GetCurrentTexture(), .ClearColor = background};
-                commands->BeginRendering({
-                    .ColorAttachments = {&color, 1},
-                    .Depth = {.Texture = depth, .Store = Rhi::StoreOp::DontCare}, // clears to 0 (reverse-Z)
-                });
-                commands->SetViewport({.Width = static_cast<float>(size.x), .Height = static_cast<float>(size.y)});
-                commands->SetScissor({.Width = size.x, .Height = size.y});
-
-                if (model)
-                {
-                    Rhi::PipelineHandle bound;
-                    for (const GpuMesh &mesh : gpu_model.Meshes)
+                    const float t = static_cast<float>(clock.ElapsedSeconds());
+                    // Dim, so the triangle stands out.
+                    const Vec4 background(0.1f + 0.05f * std::sin(t), 0.1f + 0.05f * std::sin(t + 2.1f),
+                                          0.1f + 0.05f * std::sin(t + 4.2f), 1.0f);
+                    const UVec2 size = swapchain->GetSize();
+                    if (size != depth_size)
                     {
-                        // Still streaming in: skip it this frame.
-                        if (device->IsUploadPending(mesh.Vertices) || device->IsUploadPending(mesh.Indices))
-                            continue;
-                        const GpuMaterial &material = gpu_model.Materials[mesh.Material];
-                        const Rhi::PipelineHandle pipeline = material.DoubleSided ? model_double_sided : model_pipeline;
-                        if (pipeline != bound)
-                        {
-                            commands->BindPipeline(pipeline);
-                            bound = pipeline;
-                        }
-                        commands->BindIndexBuffer(mesh.Indices, Rhi::IndexType::UInt32);
-                        commands->PushConstants(ModelPush{
-                            .Model = Mat4(1.0f),
-                            .BaseColorFactor = material.BaseColorFactor,
-                            .Vertices = Rhi::DescriptorIndex(mesh.Vertices),
-                            // White until the texture's upload and mips are recorded.
-                            .BaseColor = device->GetTextureIndex(material.BaseColor, white),
-                            .Sampler = Rhi::DescriptorIndex(sampler),
-                            .AlphaCutoff = material.AlphaCutoff,
+                        if (depth)
+                            device->DestroyTexture(depth);
+                        depth = device->CreateTexture({
+                            .Width = size.x,
+                            .Height = size.y,
+                            .Format = depth_format,
+                            .Usage = Rhi::TextureUsage::DepthAttachment,
+                            .DebugName = "Depth buffer",
                         });
-                        commands->DrawIndexed(mesh.IndexCount);
+                        depth_size = size;
                     }
-                }
-                else
-                {
-                    commands->BindPipeline(cube);
-                    commands->BindIndexBuffer(cube_indices, Rhi::IndexType::UInt16);
-                    commands->PushConstants(CubePush{
-                        .Model = glm::rotate(glm::rotate(Mat4(1.0f), t * 0.7f, Math::Up), t * 0.4f, Math::Right),
-                        .Vertices = Rhi::DescriptorIndex(cube_vertices),
-                        .Texture = Rhi::DescriptorIndex(checkerboard),
-                        .Sampler = Rhi::DescriptorIndex(sampler),
-                        .Pad = 0,
-                    });
-                    commands->DrawIndexed(static_cast<uint32_t>(cube_mesh.Indices.size()));
 
-                    commands->BindPipeline(triangle);
-                    commands->PushConstants(TrianglePush{
-                        .Vertices = Rhi::DescriptorIndex(vertex_buffer),
-                        .Texture = Rhi::DescriptorIndex(checkerboard),
-                        .Sampler = Rhi::DescriptorIndex(sampler),
-                        .Spin = 0.5f,
-                    });
-                    commands->Draw(3);
-                }
-                commands->EndRendering();
-                commands->EndMarker();
+                    // Perspective camera with an infinite far plane: reverse-Z keeps precision at any distance.
+                    const float aspect = static_cast<float>(size.x) / static_cast<float>(size.y);
+                    FrameConstants frame{};
+                    frame.View = camera.GetView();
+                    frame.Projection = Math::PerspectiveInfiniteReverseZ(Math::Radians(60.0f), aspect, near_plane);
+                    frame.ViewProjection = frame.Projection * frame.View;
+                    frame.CameraPosition = Vec4(camera.GetPosition(), 1.0f);
+                    frame.Time = t;
+                    frame.DeltaTime = static_cast<float>(delta_time);
+                    frame.Resolution[0] = size.x;
+                    frame.Resolution[1] = size.y;
+                    commands->SetFrameConstants(frame);
 
-                imgui->NewFrame(*window, static_cast<float>(delta_time));
-                draw_debug_panel(panel, frame_history, *device, *swapchain, camera, model, gpu_model.Meshes.size());
-                vsync = panel.VSync; // the checkbox may have changed it
-                imgui->Render(*commands, swapchain->GetCurrentTexture());
+                    commands->BeginMarker("Scene pass");
+                    const Rhi::ColorAttachment color{.Texture = swapchain->GetCurrentTexture(), .ClearColor = background};
+                    commands->BeginRendering({
+                        .ColorAttachments = {&color, 1},
+                        .Depth = {.Texture = depth, .Store = Rhi::StoreOp::DontCare}, // clears to 0 (reverse-Z)
+                    });
+                    commands->SetViewport({.Width = static_cast<float>(size.x), .Height = static_cast<float>(size.y)});
+                    commands->SetScissor({.Width = size.x, .Height = size.y});
+
+                    if (model)
+                    {
+                        Rhi::PipelineHandle bound;
+                        for (const GpuMesh &mesh : gpu_model.Meshes)
+                        {
+                            // Still streaming in: skip it this frame.
+                            if (device->IsUploadPending(mesh.Vertices) || device->IsUploadPending(mesh.Indices))
+                                continue;
+                            const GpuMaterial &material = gpu_model.Materials[mesh.Material];
+                            const Rhi::PipelineHandle pipeline = material.DoubleSided ? model_double_sided : model_pipeline;
+                            if (pipeline != bound)
+                            {
+                                commands->BindPipeline(pipeline);
+                                bound = pipeline;
+                            }
+                            commands->BindIndexBuffer(mesh.Indices, Rhi::IndexType::UInt32);
+                            commands->PushConstants(ModelPush{
+                                .Model = Mat4(1.0f),
+                                .BaseColorFactor = material.BaseColorFactor,
+                                .Vertices = Rhi::DescriptorIndex(mesh.Vertices),
+                                // White until the texture's upload and mips are recorded.
+                                .BaseColor = device->GetTextureIndex(material.BaseColor, white),
+                                .Sampler = Rhi::DescriptorIndex(sampler),
+                                .AlphaCutoff = material.AlphaCutoff,
+                            });
+                            commands->DrawIndexed(mesh.IndexCount);
+                        }
+                    }
+                    else
+                    {
+                        commands->BindPipeline(cube);
+                        commands->BindIndexBuffer(cube_indices, Rhi::IndexType::UInt16);
+                        commands->PushConstants(CubePush{
+                            .Model = glm::rotate(glm::rotate(Mat4(1.0f), t * 0.7f, Math::Up), t * 0.4f, Math::Right),
+                            .Vertices = Rhi::DescriptorIndex(cube_vertices),
+                            .Texture = Rhi::DescriptorIndex(checkerboard),
+                            .Sampler = Rhi::DescriptorIndex(sampler),
+                            .Pad = 0,
+                        });
+                        commands->DrawIndexed(static_cast<uint32_t>(cube_mesh.Indices.size()));
+
+                        commands->BindPipeline(triangle);
+                        commands->PushConstants(TrianglePush{
+                            .Vertices = Rhi::DescriptorIndex(vertex_buffer),
+                            .Texture = Rhi::DescriptorIndex(checkerboard),
+                            .Sampler = Rhi::DescriptorIndex(sampler),
+                            .Spin = 0.5f,
+                        });
+                        commands->Draw(3);
+                    }
+                    commands->EndRendering();
+                    commands->EndMarker();
+                }
+
+                imgui->Render(*commands, swapchain->IsAcquired() ? swapchain->GetCurrentTexture() : Rhi::TextureHandle{});
                 device->EndFrame();
             }
 

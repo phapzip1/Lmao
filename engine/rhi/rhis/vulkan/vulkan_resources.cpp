@@ -310,7 +310,7 @@ namespace Lmao::Rhi::Vulkan
 
     StagingSpace VulkanDevice::AllocateStaging(uint64_t size)
     {
-        LMAO_ASSERT(mFrameSwapchain, "staging memory is only available while a frame is being recorded");
+        LMAO_ASSERT(mRecording, "staging memory is only available while a frame is being recorded");
         Frame &frame = mFrames[mFrameIndex];
 
         // 16 covers the texel size of every format and the 4-byte rule for buffer copies.

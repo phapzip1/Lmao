@@ -21,6 +21,11 @@ namespace Lmao
         uint32_t Height;
     };
 
+    struct WindowMoveEvent
+    {
+        IVec2 Position; // client area, screen coordinates (not reported on Wayland)
+    };
+
     struct FramebufferResizeEvent
     {
         uint32_t Width; // pixels; 0 x 0 while minimized
@@ -59,7 +64,9 @@ namespace Lmao
 
     struct MouseMoveEvent
     {
-        Vec2 Position; // client area, screen coordinates, origin top-left
+        Vec2 Position;       // client area, screen coordinates, origin top-left
+        Vec2 ScreenPosition; // the same point in desktop coordinates, taken when the event happened
+                             // (equals Position where window positions are unknown, e.g. Wayland)
     };
 
     struct MouseScrollEvent
@@ -74,7 +81,7 @@ namespace Lmao
 
     using EventData = std::variant<WindowCloseEvent, WindowResizeEvent, FramebufferResizeEvent, WindowFocusEvent,
                                    WindowMinimizeEvent, KeyEvent, TextEvent, MouseButtonEvent, MouseMoveEvent,
-                                   MouseScrollEvent, CursorEnterEvent>;
+                                   MouseScrollEvent, CursorEnterEvent, WindowMoveEvent>;
 
     struct Event
     {

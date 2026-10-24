@@ -141,7 +141,7 @@ std::unique_ptr<Device> createDevice(Backend, const DeviceCreateInfo&);
 - **2 frames in flight.** Each frame owns per-thread command pools, a linear upload ring and a deletion queue keyed on the timeline semaphore value.
 - **Swapchain:** FIFO default, MAILBOX when available; recreate on `OUT_OF_DATE`/`SUBOPTIMAL`/resize; skip frames while minimized; one render-finished semaphore **per swapchain image**.
 - **Bindless set 0:** sampled images, storage buffers, samplers, storage images (`UPDATE_AFTER_BIND | PARTIALLY_BOUND`); per-draw data in push constants; `nonuniformEXT` for varying indices.
-- **Pipelines:** cache persisted to disk; compiled on worker threads; layouts from SPIRV-Reflect.
+- **Pipelines:** one `VkPipelineCache`, loaded at device creation and saved at shutdown to `DeviceDesc::PipelineCacheDirectory` (one file per vendor/device ID, written to a temporary file and renamed into place). The header's vendor ID, device ID and `pipelineCacheUUID` are checked before the data reaches the driver, and a stale cache is dropped with a logged reason. Hits are counted with `VkPipelineCreationFeedback`. Later: compiled on worker threads; layouts from SPIRV-Reflect.
 - **Queues:** graphics+present first; transfer queue for streaming; async compute later.
 - **Multithreaded recording:** one command pool per thread per frame; a single thread submits.
 - Name every object (`vkSetDebugUtilsObjectNameEXT`) and label every pass.
@@ -160,7 +160,7 @@ Slang, compiled offline by the cooker to SPIR-V, DXIL, MSL, GLSL or WGSL per bac
 Right-handed, Y-up, column-major, depth 0..1, reverse-Z with `D32_SFLOAT`. Each backend fixes clip-space differences in one place (Vulkan: negative viewport height; GL: `glClipControl(GL_UPPER_LEFT, GL_ZERO_TO_ONE)`). See [decisions/0005](decisions/0005-coordinate-conventions.md).
 
 ## Platform layer
-`core/platform/` defines Window, Input, FileSystem, Time, Threads, DynamicLibrary, Clipboard, Dialogs, CrashHandler and Sockets. GLFW is one backend (Windows, Linux, macOS); native backends come later for mobile and consoles. The window exposes native handles (`HWND`, `wl_surface*`, `CAMetalLayer*`, …) for surface creation, and is created after the RHI backend is chosen (GLFW needs `GLFW_NO_API` except for GL).
+`core/platform/` defines Window, Input, FileSystem, Time, Threads, DynamicLibrary, Clipboard, Dialogs, CrashHandler and Sockets. `paths.h` returns well-known folders as UTF-8: `GetExecutableDirectory`, `GetUserDataDirectory` and `GetUserCacheDirectory` (`%LOCALAPPDATA%\<app>[\Cache]`, or the XDG data and cache folders). GLFW is one backend (Windows, Linux, macOS); native backends come later for mobile and consoles. The window exposes native handles (`HWND`, `wl_surface*`, `CAMetalLayer*`, …) for surface creation, and is created after the RHI backend is chosen (GLFW needs `GLFW_NO_API` except for GL).
 
 Cross-platform rules: virtual paths with `/` and case-sensitive matching, UTF-8 internally, little-endian versioned asset formats, builds on MSVC/clang-cl and GCC/Clang from M0.
 

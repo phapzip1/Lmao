@@ -1,7 +1,9 @@
 #pragma once
 
 // Presentation to a window. Created by Device::CreateSwapchain and driven by
-// Device::BeginFrame / EndFrame. Destroy it before the Device and before its Window.
+// Device::BeginFrame / EndFrame, which can present several swapchains per frame (one per
+// window). Destroy it before the Device and before its Window, and never between BeginFrame
+// and EndFrame.
 
 #include "core/math/math.h"
 #include "core/platform/window.h"
@@ -37,8 +39,11 @@ namespace Lmao::Rhi
         virtual Format GetFormat() const = 0;
         virtual uint32_t GetImageCount() const = 0;
 
-        // The image being rendered this frame. Only valid between BeginFrame and EndFrame;
-        // the handle changes when the swapchain is recreated.
+        // Whether this frame got an image from this swapchain (BeginFrame skips minimized ones).
+        virtual bool IsAcquired() const = 0;
+
+        // The image being rendered this frame. Only valid while IsAcquired(); the handle changes
+        // when the swapchain is recreated.
         virtual TextureHandle GetCurrentTexture() const = 0;
 
     protected:

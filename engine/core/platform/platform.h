@@ -16,7 +16,9 @@
 
 #include <memory>
 #include <span>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace Lmao
 {
@@ -31,6 +33,15 @@ namespace Lmao
     struct PlatformDesc
     {
         DisplayBackend Display = DisplayBackend::Auto;
+    };
+
+    struct MonitorInfo
+    {
+        IVec2 Position{0, 0}; // screen coordinates
+        UVec2 Size{0, 0};
+        IVec2 WorkPosition{0, 0}; // without task bars, docks and menu bars
+        UVec2 WorkSize{0, 0};
+        float ContentScale = 1.0f; // DPI scale, 1.0 = 96 DPI
     };
 
     class Platform
@@ -55,6 +66,15 @@ namespace Lmao
         virtual std::span<const Event> GetEvents() const = 0;
 
         virtual std::string_view GetName() const = 0; // e.g. "GLFW 3.6.0 (X11)"
+
+        // False where applications can't place their own windows or read their position
+        // (Wayland). Tools that need it (e.g. ImGui multi-viewport) should turn themselves off.
+        virtual bool SupportsWindowPositioning() const = 0;
+        virtual std::vector<MonitorInfo> GetMonitors() const = 0; // the primary monitor first
+
+        // UTF-8 text on the system clipboard. GetClipboardText returns "" when it holds no text.
+        virtual void SetClipboardText(std::string_view text) = 0;
+        virtual std::string GetClipboardText() const = 0;
 
     protected:
         Platform() = default;
