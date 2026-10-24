@@ -10,7 +10,9 @@
 namespace Lmao::Rhi
 {
 
+    using BufferHandle = Handle<struct BufferTag>;
     using TextureHandle = Handle<struct TextureTag>;
+    using SamplerHandle = Handle<struct SamplerTag>;
 
     enum class Format : uint8_t
     {

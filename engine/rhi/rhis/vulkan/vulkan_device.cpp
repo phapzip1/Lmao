@@ -51,6 +51,7 @@ namespace Lmao::Rhi::Vulkan
             fn("synchronization2", chain.Vulkan13.synchronization2);
             fn("timelineSemaphore", chain.Vulkan12.timelineSemaphore);
             fn("bufferDeviceAddress", chain.Vulkan12.bufferDeviceAddress);
+            fn("samplerAnisotropy", chain.Features2.features.samplerAnisotropy);
             // Slang lowers SV_VertexID to gl_VertexIndex - gl_BaseVertex; also SV_DrawIndex later
             fn("shaderDrawParameters", chain.Vulkan11.shaderDrawParameters);
             // Bindless descriptors
@@ -232,14 +233,24 @@ namespace Lmao::Rhi::Vulkan
             FeatureChain enabled;
             for_each_required_feature(enabled, [](const char *, VkBool32 &value) { value = VK_TRUE; });
 
-            const char *extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+            // Optional: VK_EXT_memory_budget makes the allocator's budget numbers reflect what the
+            // OS reports (other processes included) instead of a fraction of heap sizes.
+            uint32_t extension_count = 0;
+            vkEnumerateDeviceExtensionProperties(best.Physical, nullptr, &extension_count, nullptr);
+            std::vector<VkExtensionProperties> available(extension_count);
+            vkEnumerateDeviceExtensionProperties(best.Physical, nullptr, &extension_count, available.data());
+            const bool memory_budget = HasExtension(available, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+
+            std::vector<const char *> extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+            if (memory_budget)
+                extensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
             const VkDeviceCreateInfo create_info{
                 .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
                 .pNext = &enabled.Features2,
                 .queueCreateInfoCount = 1,
                 .pQueueCreateInfos = &queue_info,
-                .enabledExtensionCount = static_cast<uint32_t>(std::size(extensions)),
-                .ppEnabledExtensionNames = extensions,
+                .enabledExtensionCount = static_cast<uint32_t>(extensions.size()),
+                .ppEnabledExtensionNames = extensions.data(),
             };
             VkDevice device = VK_NULL_HANDLE;
             if (!Check(vkCreateDevice(best.Physical, &create_info, nullptr, &device), "vkCreateDevice"))
@@ -250,7 +261,7 @@ namespace Lmao::Rhi::Vulkan
             LMAO_LOG_INFO(LogChannel(), "Using GPU: {} ({}, driver {})", info.Name, ToString(info.Type), info.Driver);
             auto vulkan_device = std::make_unique<VulkanDevice>(std::move(instance), best.Physical, device,
                                                                 best.QueueFamily, std::move(info));
-            if (!vulkan_device->Initialize())
+            if (!vulkan_device->Initialize(memory_budget))
                 return nullptr;
             return vulkan_device;
         }
@@ -272,11 +283,15 @@ namespace Lmao::Rhi::Vulkan
         LMAO_ASSERT(mSwapchainCount == 0, "{} swapchain(s) still alive when the device was destroyed", mSwapchainCount);
         LMAO_ASSERT(mTextures.IsEmpty(), "{} texture(s) still alive when the device was destroyed", mTextures.Size());
         LMAO_ASSERT(mPipelines.IsEmpty(), "{} pipeline(s) still alive when the device was destroyed", mPipelines.Size());
+        LMAO_ASSERT(mBuffers.IsEmpty(), "{} buffer(s) still alive when the device was destroyed", mBuffers.Size());
+        LMAO_ASSERT(mSamplers.IsEmpty(), "{} sampler(s) still alive when the device was destroyed", mSamplers.Size());
         vkDeviceWaitIdle(mDevice);
         destroy_pending(true);
         if (mPipelineLayout != VK_NULL_HANDLE)
             vkDestroyPipelineLayout(mDevice, mPipelineLayout, nullptr);
         destroy_frame_resources();
+        if (mAllocator != VK_NULL_HANDLE)
+            vmaDestroyAllocator(mAllocator); // asserts (in VMA) if any allocation leaked
         vkDestroyDevice(mDevice, nullptr);
         device_exists = false;
     }
@@ -287,8 +302,15 @@ namespace Lmao::Rhi::Vulkan
         Check(vkDeviceWaitIdle(mDevice), "vkDeviceWaitIdle");
     }
 
-    bool VulkanDevice::Initialize()
+    bool VulkanDevice::Initialize(bool memory_budget)
     {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(mPhysicalDevice, &properties);
+        mLimits = properties.limits;
+
+        if (!create_allocator(memory_budget))
+            return false;
+
         const VkPushConstantRange push_constants{.stageFlags = VK_SHADER_STAGE_ALL, .offset = 0, .size = 128};
         const VkPipelineLayoutCreateInfo layout_info{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -356,6 +378,37 @@ namespace Lmao::Rhi::Vulkan
         mFrameTimeline = VK_NULL_HANDLE;
     }
 
+    bool VulkanDevice::create_allocator(bool memory_budget)
+    {
+        // VMA loads the rest of the functions it needs through these two (from volk).
+        const VmaVulkanFunctions functions{
+            .vkGetInstanceProcAddr = vkGetInstanceProcAddr,
+            .vkGetDeviceProcAddr = vkGetDeviceProcAddr,
+        };
+        VmaAllocatorCreateFlags flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+        if (memory_budget)
+            flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
+        const VmaAllocatorCreateInfo create_info{
+            .flags = flags,
+            .physicalDevice = mPhysicalDevice,
+            .device = mDevice,
+            .pVulkanFunctions = &functions,
+            .instance = mInstance->GetHandle(),
+            .vulkanApiVersion = VK_API_VERSION_1_3,
+        };
+        if (!Check(vmaCreateAllocator(&create_info, &mAllocator), "vmaCreateAllocator"))
+            return false;
+        LMAO_LOG_DEBUG(LogChannel(), "Memory allocator created (memory budget {})", memory_budget ? "on" : "off");
+        return true;
+    }
+
+    void VulkanDevice::defer_destroy(PendingDestroy pending)
+    {
+        // Submitted frames may still use the objects, and so may the frame being recorded right now.
+        pending.frame = mFrameSwapchain ? mSubmittedFrames + 1 : mSubmittedFrames;
+        mPendingDestroys.push_back(pending);
+    }
+
     void VulkanDevice::destroy_pending(bool everything)
     {
         uint64_t completed = 0;
@@ -365,7 +418,17 @@ namespace Lmao::Rhi::Vulkan
                       {
                           if (!everything && pending.frame > completed)
                               return false;
-                          vkDestroyPipeline(mDevice, pending.pipeline, nullptr);
+                          // Views before their images; the allocation after the object bound to it.
+                          if (pending.pipeline != VK_NULL_HANDLE)
+                              vkDestroyPipeline(mDevice, pending.pipeline, nullptr);
+                          if (pending.sampler != VK_NULL_HANDLE)
+                              vkDestroySampler(mDevice, pending.sampler, nullptr);
+                          if (pending.view != VK_NULL_HANDLE)
+                              vkDestroyImageView(mDevice, pending.view, nullptr);
+                          if (pending.image != VK_NULL_HANDLE)
+                              vmaDestroyImage(mAllocator, pending.image, pending.allocation);
+                          else if (pending.buffer != VK_NULL_HANDLE)
+                              vmaDestroyBuffer(mAllocator, pending.buffer, pending.allocation);
                           return true;
                       });
     }

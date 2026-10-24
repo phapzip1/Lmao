@@ -1,6 +1,7 @@
 add_library(lmao_core STATIC
     assert/assert.h
     assert/assert.cpp
+    containers/enum_flags.h
     containers/handle.h
     containers/slot_map.h
     io/path.h

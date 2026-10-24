@@ -9,6 +9,7 @@
 
 #include "rhi/command_list.h"
 #include "rhi/pipeline.h"
+#include "rhi/resources.h"
 #include "rhi/swapchain.h"
 #include "rhi/types.h"
 
@@ -57,20 +58,6 @@ namespace Lmao::Rhi
         bool BreakOnValidationError = true; // break into an attached debugger on validation errors
     };
 
-    // One device per process for now. Destroy every object created from it first.
-    //
-    // Frame loop (one swapchain per frame for now):
-    //
-    //     if (Rhi::CommandList *commands = device->BeginFrame(*swapchain))
-    //     {
-    //         commands->BeginRendering({.Texture = swapchain->GetCurrentTexture(), .ClearColor = color});
-    //         commands->SetViewport({.Width = w, .Height = h});
-    //         commands->SetScissor({.Width = w, .Height = h});
-    //         commands->BindPipeline(pipeline);
-    //         commands->Draw(3);
-    //         commands->EndRendering();
-    //         device->EndFrame();
-    //     }
     class Device
     {
     public:
@@ -93,6 +80,23 @@ namespace Lmao::Rhi
 
         // nullptr on failure (the reason is logged).
         virtual std::unique_ptr<Swapchain> CreateSwapchain(const SwapchainDesc &desc) = 0;
+
+        // Resources. Create* returns an invalid handle on failure (the reason is logged).
+        // Destroy* is safe while frames using the resource are in flight: destruction is deferred
+        // until the GPU is done with them.
+        virtual BufferHandle CreateBuffer(const BufferDesc &desc) = 0;
+        virtual void DestroyBuffer(BufferHandle buffer) = 0;
+        // CPU pointer to an Upload or Readback buffer (mapped for its whole life); nullptr for GpuOnly.
+        virtual void *GetMappedData(BufferHandle buffer) = 0;
+
+        virtual TextureHandle CreateTexture(const TextureDesc &desc) = 0;
+        // Only for textures from CreateTexture; swapchain images belong to their swapchain.
+        virtual void DestroyTexture(TextureHandle texture) = 0;
+
+        virtual SamplerHandle CreateSampler(const SamplerDesc &desc) = 0;
+        virtual void DestroySampler(SamplerHandle sampler) = 0;
+
+        virtual MemoryStats GetMemoryStats() const = 0;
 
         // An invalid handle on failure (the reason is logged).
         virtual PipelineHandle CreateGraphicsPipeline(const GraphicsPipelineDesc &desc) = 0;

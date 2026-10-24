@@ -1,6 +1,6 @@
 // Sandbox: opens a window, creates the GPU device and a swapchain, draws a triangle over a
 // slowly changing background, logs every input event, and marks frames for Tracy.
-// Esc closes the window; V toggles vsync.
+// Esc closes the window; V toggles vsync; M logs GPU memory usage.
 
 #include "core/log/log.h"
 #include "core/platform/crash_handler.h"
@@ -115,6 +115,15 @@ int main()
                     vsync = !vsync;
                     swapchain->SetVSync(vsync);
                     LMAO_INFO("VSync {}", vsync ? "on" : "off");
+                }
+                if (const auto *key = std::get_if<KeyEvent>(&event.Data);
+                    key && key->Code == Key::M && key->Action == KeyAction::Press)
+                {
+                    const Rhi::MemoryStats stats = device->GetMemoryStats();
+                    LMAO_INFO("GPU memory: {} allocations, {:.1f} MiB allocated, {:.1f} MiB reserved; "
+                              "device-local {:.1f} of {:.1f} MiB budget",
+                              stats.AllocationCount, stats.AllocatedBytes / 1048576.0, stats.ReservedBytes / 1048576.0,
+                              stats.DeviceLocalUsage / 1048576.0, stats.DeviceLocalBudget / 1048576.0);
                 }
             }
 

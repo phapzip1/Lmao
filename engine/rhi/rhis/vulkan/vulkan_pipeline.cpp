@@ -190,9 +190,7 @@ namespace Lmao::Rhi::Vulkan
         LMAO_ASSERT(pipeline, "DestroyPipeline: stale or invalid handle");
         if (!pipeline)
             return;
-        // Submitted frames may still use it, and so may the frame being recorded right now.
-        const uint64_t last_user = mFrameSwapchain ? mSubmittedFrames + 1 : mSubmittedFrames;
-        mPendingDestroys.push_back({last_user, pipeline->Handle});
+        defer_destroy({.pipeline = pipeline->Handle});
         mPipelines.Remove(handle);
     }
 

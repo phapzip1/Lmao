@@ -31,6 +31,9 @@ namespace Lmao::Rhi::Vulkan
             case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
                 return {VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                         VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT};
+            case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL:
+                return {VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT};
             default:
                 return {VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
             }
@@ -86,6 +89,7 @@ namespace Lmao::Rhi::Vulkan
         for (const ColorAttachment &attachment : color_attachments)
         {
             Texture &texture = mDevice.GetTexture(attachment.Texture);
+            LMAO_ASSERT(texture.Aspect == VK_IMAGE_ASPECT_COLOR_BIT, "depth textures can't be color attachments");
             // Clear and DontCare overwrite everything: skip preserving the old contents.
             if (attachment.Load != LoadOp::Load)
                 texture.Layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -203,7 +207,7 @@ namespace Lmao::Rhi::Vulkan
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .image = texture.Image,
-            .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1},
+            .subresourceRange = {.aspectMask = texture.Aspect, .levelCount = texture.MipLevels, .layerCount = 1},
         };
         const VkDependencyInfo dependency{
             .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
